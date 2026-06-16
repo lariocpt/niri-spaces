@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+import sys
+import os
+import subprocess
+
+CHARS = {
+    'A': [" ▄▀▀▄ ", "▐▄▄▄▐ ", "▐   ▐ ", "▐   ▐ "],
+    'B': ["▐▀▀▄  ", "▐▄▄▀  ", "▐   █ ", "▐▄▄▀  "],
+    'C': [" ▄▀▀▄ ", "▐     ", "▐     ", " ▀▄▄▀ "],
+    'D': ["▐▀▀▄  ", "▐   █ ", "▐   █ ", "▐▄▄▀  "],
+    'E': ["▐▀▀▀  ", "▐▀▀   ", "▐     ", "▐▄▄▄  "],
+    'F': ["▐▀▀▀  ", "▐▀▀   ", "▐     ", "▐     "],
+    'G': [" ▄▀▀▄ ", "▐  ▄▄ ", "▐   █ ", " ▀▄▄▀ "],
+    'H': ["▐   ▐ ", "▐▄▄▄▐ ", "▐   ▐ ", "▐   ▐ "],
+    'I': [" █ ", " █ ", " █ ", " █ "],
+    'J': ["  ▄█ ", "   █ ", "▐  █ ", " ▀▀  "],
+    'K': ["▐  ▄▀ ", "▐▄█   ", "▐  █  ", "▐   █ "],
+    'L': ["▐     ", "▐     ", "▐     ", "▐▄▄▄  "],
+    'M': ["▐\\/▀\\/▐ ", "▐   ▐ ", "▐   ▐ ", "▐   ▐ "],
+    'N': ["▐▀▀▄  ", "▐   █ ", "▐   █ ", "▐   █ "],
+    'O': [" ▄▀▀▄ ", "▐   █ ", "▐   █ ", " ▀▄▄▀ "],
+    'P': ["▐▀▀▄  ", "▐▄▄▀  ", "▐     ", "▐     "],
+    'Q': [" ▄▀▀▄ ", "▐   █ ", "▐ ▄ █ ", " ▀▀▀▄ "],
+    'R': ["▐▀▀▄  ", "▐▄▄▀  ", "▐  █  ", "▐   █ "],
+    'S': [" ▄▀▀▀ ", " ▀▀▄  ", "    █ ", "▐▄▄▄▀ "],
+    'T': ["▀▀█▀▀ ", "  █   ", "  █   ", "  █   "],
+    'U': ["▐   ▐ ", "▐   ▐ ", "▐   ▐ ", " ▀▄▄▀ "],
+    'V': ["▐   ▐ ", "▐   ▐ ", " █ █  ", "  █   "],
+    'W': ["▐   ▐ ", "▐   ▐ ", "▐ █ ▐ ", " ▀ ▀  "],
+    'X': ["▐   █ ", " ▀▄▀  ", " ▄▀▄  ", "▐   █ "],
+    'Y': ["▐   █ ", " ▀▄▀  ", "  █   ", "  █   "],
+    'Z': ["▀▀▀▀█ ", "   ▄▀ ", " ▄▀   ", "▐▄▄▄▄ "],
+    '0': [" ▄▀▀▄ ", "▐  █ █", "█ ▐  █", " ▀▄▄▀ "],
+    '1': [" ▄█  ", "  █  ", "  █  ", "▄▄█▄▄"],
+    '2': ["▐▀▀▄  ", "  ▄▀  ", " ▄▀   ", "▐▄▄▄▄ "],
+    '3': ["▐▀▀▀▄ ", "  ▀▀▄ ", "    █ ", "▐▄▄▄▀ "],
+    '4': [" █  █ ", "▐▄▄▄▐ ", "    █ ", "    █ "],
+    '5': ["▐▀▀▀▀ ", "▐▄▄▄  ", "    █ ", "▐▄▄▄▀ "],
+    '6': [" ▄▀▀▄ ", "▐▄▄▄  ", "▐   █ ", " ▀▄▄▀ "],
+    '7': ["▀▀▀▀█ ", "   █  ", "  █   ", "  █   "],
+    '8': [" ▄▀▀▄ ", " ▀▄▄▀ ", "▐   █ ", " ▀▄▄▀ "],
+    '9': [" ▄▀▀▄ ", "▐   █ ", " ▀▄▄▐ ", " ▀▄▄▀ "],
+    '-': ["      ", "▄▄▄▄▄ ", "      ", "      "],
+    '_': ["      ", "      ", "      ", "▄▄▄▄▄ "],
+    ' ': ["      ", "      ", "      ", "      "]
+}
+
+def trim_line(line):
+    return line.strip()
+
+def get_git_info(path):
+    try:
+        is_git = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=path, capture_output=True, text=True, check=False
+        ).stdout.strip() == "true"
+        
+        if not is_git:
+            return None
+            
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=path, capture_output=True, text=True, check=False
+        ).stdout.strip()
+        
+        commit = subprocess.run(
+            ["git", "log", "-1", "--format=%s (%cr)"],
+            cwd=path, capture_output=True, text=True, check=False
+        ).stdout.strip()
+        
+        status_lines = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=path, capture_output=True, text=True, check=False
+        ).stdout.strip().splitlines()
+        
+        modified = len(status_lines) if status_lines and status_lines[0] else 0
+        return {
+            "branch": branch,
+            "commit": commit,
+            "modified": modified
+        }
+    except Exception:
+        return None
+
+def find_custom_splash(path):
+    current = os.path.abspath(path)
+    while True:
+        for fname in [".space-splash", ".space-splash.txt", "space-splash.txt"]:
+            fpath = os.path.join(current, fname)
+            if os.path.isfile(fpath):
+                return fpath
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return None
+
+def main():
+    target_path = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
+    target_path = os.path.abspath(target_path)
+    
+    custom_splash = find_custom_splash(target_path)
+    git_info = get_git_info(target_path)
+    
+    lines_to_print = []
+    
+    if custom_splash:
+        with open(custom_splash, "r") as f:
+            lines_to_print = [line.rstrip("\n") for line in f.readlines()]
+    else:
+        # Generate ASCII Art from folder name
+        folder_name = os.path.basename(target_path).upper()
+        # Clean folder name to allowed characters
+        cleaned_name = "".join(c if c in CHARS else " " for c in folder_name)
+        
+        ascii_lines = ["", "", "", ""]
+        for char in cleaned_name:
+            char_lines = CHARS.get(char, CHARS[' '])
+            for idx in range(4):
+                ascii_lines[idx] += char_lines[idx]
+        
+        lines_to_print = [line for line in ascii_lines if line.strip()]
+        
+    # Calculate box width
+    max_content_width = max(len(line) for line in lines_to_print) if lines_to_print else 40
+    if git_info:
+        max_content_width = max(max_content_width, 50)
+    
+    box_width = max_content_width + 4
+    
+    print("┌" + "─" * (box_width - 2) + "┐")
+    for line in lines_to_print:
+        padding = (box_width - 4 - len(line))
+        left_pad = padding // 2
+        right_pad = padding - left_pad
+        print("│ " + " " * left_pad + line + " " * right_pad + " │")
+        
+    if git_info or target_path:
+        print("├" + "─" * (box_width - 2) + "┤")
+        info_lines = []
+        info_lines.append(f"Workspace: {os.path.basename(target_path)}")
+        info_lines.append(f"Path:      {target_path}")
+        if git_info:
+            info_lines.append(f"Branch:    {git_info['branch']}")
+            info_lines.append(f"Commit:    {git_info['commit']}")
+            info_lines.append(f"Status:    {git_info['modified']} modified files")
+            
+        for line in info_lines:
+            line_str = line[:(box_width - 6)]
+            padding = box_width - 4 - len(line_str)
+            print("│ " + line_str + " " * padding + " │")
+            
+    print("└" + "─" * (box_width - 2) + "┘")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+import sys
+import os
+import time
+import json
+import subprocess
+
+CONFIG_DIR = os.path.expanduser("~/.config/niri-spaces")
+SPACES_DIR = os.path.join(CONFIG_DIR, "spaces")
+TEMPLATES_DIR = os.path.join(CONFIG_DIR, "templates")
+
+def get_niri_windows():
+    res = subprocess.run(["niri", "msg", "--json", "windows"], capture_output=True, text=True, check=False)
+    if res.returncode != 0:
+        return []
+    try:
+        return json.loads(res.stdout)
+    except Exception:
+        return []
+
+def launch_on_workspace(workspace, app_id, cmd_str, env_str):
+    # Get existing window IDs for this app_id
+    pre_ids = {w["id"] for w in get_niri_windows() if w.get("app_id") == app_id}
+    
+    # Prepare environment
+    env = os.environ.copy()
+    if env_str:
+        for item in env_str.split():
+            if "=" in item:
+                k, v = item.split("=", 1)
+                env[k] = v
+                
+    # Launch process detached
+    p = subprocess.Popen(
+        cmd_str, shell=True, env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+        start_new_session=True
+    )
+    
+    # Wait for new window ID to map
+    for _ in range(50):
+        post_windows = get_niri_windows()
+        post_ids = {w["id"] for w in post_windows if w.get("app_id") == app_id}
+        new_ids = post_ids - pre_ids
+        if new_ids:
+            new_id = list(new_ids)[0]
+            # Move window to workspace
+            subprocess.run(["niri", "msg", "action", "move-window-to-workspace", "--window-id", str(new_id), workspace], check=False)
+            return new_id
+        time.sleep(0.2)
+        
+    return None
+
+def parse_and_run_config(content):
+    current_workspace = ""
+    local_vars = {}
+    
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+            
+        if line.startswith("@workspace "):
+            current_workspace = line[11:].strip()
+            print(f"Switching target workspace to: {current_workspace}")
+            continue
+            
+        if line.startswith("@action "):
+            action_cmd = line[8:].strip()
+            print(f"Running action: {action_cmd}")
+            env = os.environ.copy()
+            for k, v in local_vars.items():
+                env[k] = str(v)
+            subprocess.run(action_cmd, shell=True, env=env, check=False)
+            continue
+            
+        parts = [p.strip() for p in line.split("|")]
+        app_id = parts[0]
+        cmd_str = parts[1] if len(parts) > 1 else ""
+        env_str = parts[2] if len(parts) > 2 else ""
+        var_name = parts[3] if len(parts) > 3 else ""
+        
+        if not app_id or not cmd_str:
+            continue
+            
+        print(f"Launching {app_id} on workspace '{current_workspace}'")
+        win_id = launch_on_workspace(current_workspace, app_id, cmd_str, env_str)
+        
+        if win_id and var_name:
+            local_vars[var_name] = win_id
+            print(f"Captured ID for {var_name}: {win_id}")
+
+def load_space(space_name, args):
+    # 1. Check if it's a template first
+    template_path = os.path.join(TEMPLATES_DIR, f"{space_name}.space")
+    space_path = os.path.join(SPACES_DIR, f"{space_name}.space")
+    
+    content = ""
+    if os.path.isfile(template_path):
+        print(f"Loading template: {template_path} with args {args}")
+        with open(template_path, "r") as f:
+            content = f.read()
+            # Replace placeholders ($1, $2, etc.)
+            for idx, arg in enumerate(args, 1):
+                content = content.replace(f"${idx}", arg)
+    elif os.path.isfile(space_path):
+        if args:
+            print(f"Warning: space '{space_name}' is not a template but arguments were provided.")
+        print(f"Loading space config: {space_path}")
+        with open(space_path, "r") as f:
+            content = f.read()
+    else:
+        print(f"Error: Workspace layout '{space_name}' not found under spaces/ or templates/.")
+        sys.exit(1)
+        
+    parse_and_run_config(content)
+
+def start_autostart():
+    autostart_path = os.path.join(CONFIG_DIR, "autostart")
+    if not os.path.isfile(autostart_path):
+        print("Autostart configuration not found.")
+        return
+        
+    print(f"Processing autostart config: {autostart_path}")
+    with open(autostart_path, "r") as f:
+        for line in f.readlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+                
+            parts = line.split()
+            if parts[0] == "load" and len(parts) > 1:
+                load_space(parts[1], parts[2:])
+
+def show_help():
+    print("Usage:")
+    print("  niri-spaces load <name> [args...]   Load a workspace layout or template")
+    print("  niri-spaces start                   Run the autostart layout list")
+    print("  niri-spaces help                    Show this help message")
+
+def main():
+    if not os.path.exists(CONFIG_DIR):
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        os.makedirs(SPACES_DIR, exist_ok=True)
+        os.makedirs(TEMPLATES_DIR, exist_ok=True)
+        
+    # Wait for Niri to be available
+    for _ in range(30):
+        res = subprocess.run(["niri", "msg", "workspaces"], capture_output=True, check=False)
+        if res.returncode == 0:
+            break
+        time.sleep(0.2)
+        
+    if len(sys.argv) < 2:
+        show_help()
+        sys.exit(1)
+        
+    cmd = sys.argv[1]
+    if cmd == "load" and len(sys.argv) > 2:
+        load_space(sys.argv[2], sys.argv[3:])
+    elif cmd in ("start", "autostart"):
+        start_autostart()
+    elif cmd in ("help", "-h", "--help"):
+        show_help()
+    else:
+        show_help()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
