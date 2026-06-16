@@ -11,10 +11,12 @@ echo "Installing niri-spaces..."
 # 1. Create target directories
 mkdir -p "$CONFIG_DIR/spaces" "$CONFIG_DIR/templates" "$BIN_DIR"
 
-# 2. Copy configurations
-cp "$REPO_DIR/autostart" "$CONFIG_DIR/autostart"
-cp "$REPO_DIR/spaces/"*.space "$CONFIG_DIR/spaces/"
-cp "$REPO_DIR/templates/"*.space "$CONFIG_DIR/templates/"
+# 2. Copy default configurations
+cp "$REPO_DIR/autostart" "$CONFIG_DIR/autostart" || true
+shopt -s nullglob
+cp "$REPO_DIR/spaces/"*.space "$CONFIG_DIR/spaces/" 2>/dev/null || true
+cp "$REPO_DIR/templates/"*.space "$CONFIG_DIR/templates/" 2>/dev/null || true
+shopt -u nullglob
 
 # 3. Create symlinks in local bin
 ln -sf "$REPO_DIR/niri-spaces" "$BIN_DIR/niri-spaces"

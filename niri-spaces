@@ -9,6 +9,24 @@ CONFIG_DIR = os.path.expanduser("~/.config/niri-spaces")
 SPACES_DIR = os.path.join(CONFIG_DIR, "spaces")
 TEMPLATES_DIR = os.path.join(CONFIG_DIR, "templates")
 
+# Override with user config if present
+GLOBAL_CONFIG_FILE = os.path.join(CONFIG_DIR, "config")
+if os.path.isfile(GLOBAL_CONFIG_FILE):
+    with open(GLOBAL_CONFIG_FILE, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = os.path.expanduser(v.strip().strip("'\""))
+                if k == "SPACES_DIR":
+                    SPACES_DIR = v
+                elif k == "TEMPLATES_DIR":
+                    TEMPLATES_DIR = v
+
+
 def get_niri_windows():
     res = subprocess.run(["niri", "msg", "--json", "windows"], capture_output=True, text=True, check=False)
     if res.returncode != 0:

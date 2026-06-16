@@ -1,0 +1,12 @@
+# Workspace Name
+@workspace default
+
+# Screen 1 - Left Column: Terminal
+com.mitchellh.ghostty | ghostty | | terminal_id
+
+# Screen 1 - Right Column: Browser
+google-chrome | google-chrome --new-window about:blank | | browser_id
+
+# Position Screen 1
+@action [ -n "$terminal_id" ] && niri msg action focus-window --id "$terminal_id" && niri msg action set-column-width "50%"
+@action [ -n "$browser_id" ] && niri msg action focus-window --id "$browser_id" && niri msg action set-column-width "50%"
