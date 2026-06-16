@@ -25,7 +25,7 @@ NIRI_CONFIG="$HOME/.config/niri/config.kdl"
 if [ -f "$NIRI_CONFIG" ]; then
     if ! grep -q 'niri-spaces' "$NIRI_CONFIG"; then
         echo "Adding Mod+Ctrl+Shift+S shortcut to Niri config..."
-        sed -i '/Mod+Shift+P { power-off-monitors; }/a \    Mod+Ctrl+Shift+S hotkey-overlay-title="Niri Spaces: Reload Workspaces" { spawn "niri-spaces" "start"; }' "$NIRI_CONFIG"
+        sed -i '/Mod+Shift+P { power-off-monitors; }/a \    Mod+Ctrl+Shift+S hotkey-overlay-title="Niri Spaces: Menu" { spawn "niri-spaces" "menu"; }' "$NIRI_CONFIG"
     else
         echo "Niri keybind already exists in config.kdl."
     fi

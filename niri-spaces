@@ -132,10 +132,50 @@ def start_autostart():
             if parts[0] == "load" and len(parts) > 1:
                 load_space(parts[1], parts[2:])
 
+def run_menu():
+    # Find all spaces and templates
+    spaces = []
+    if os.path.isdir(SPACES_DIR):
+        spaces = [os.path.splitext(f)[0] for f in os.listdir(SPACES_DIR) if f.endswith(".space")]
+    
+    templates = []
+    if os.path.isdir(TEMPLATES_DIR):
+        templates = [os.path.splitext(f)[0] for f in os.listdir(TEMPLATES_DIR) if f.endswith(".space")]
+    
+    options = []
+    options.append("start (Load all workspaces in autostart)")
+    for s in spaces:
+        options.append(f"load space: {s}")
+    for t in templates:
+        if t == "myrepo-mono":
+            for i in range(1, 5):
+                options.append(f"load template: {t} {i}")
+        else:
+            options.append(f"load template: {t}")
+            
+    input_str = "\n".join(options)
+    res = subprocess.run(
+        ["fuzzel", "--dmenu", "--prompt", "Load Workspace: "],
+        input=input_str, capture_output=True, text=True, check=False
+    )
+    if res.returncode != 0 or not res.stdout.strip():
+        return
+        
+    choice = res.stdout.strip()
+    if choice.startswith("start"):
+        start_autostart()
+    elif choice.startswith("load space: "):
+        space_name = choice[12:]
+        load_space(space_name, [])
+    elif choice.startswith("load template: "):
+        parts = choice[15:].split()
+        load_space(parts[0], parts[1:])
+
 def show_help():
     print("Usage:")
     print("  niri-spaces load <name> [args...]   Load a workspace layout or template")
     print("  niri-spaces start                   Run the autostart layout list")
+    print("  niri-spaces menu                    Open the fuzzel selector menu")
     print("  niri-spaces help                    Show this help message")
 
 def main():
@@ -160,6 +200,8 @@ def main():
         load_space(sys.argv[2], sys.argv[3:])
     elif cmd in ("start", "autostart"):
         start_autostart()
+    elif cmd == "menu":
+        run_menu()
     elif cmd in ("help", "-h", "--help"):
         show_help()
     else:
