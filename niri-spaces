@@ -12,25 +12,30 @@ sleep 0.5
 for n in {2..5}; do
     niri msg action focus-workspace "$n"
     
-    # 1. terminal
-    niri msg action spawn ghostty
-    sleep 0.5
-    
-    # 2. vscodium
+    # 1. vscodium
     niri msg action spawn codium "$HOME/mycorp/myrepo-mono-$n/myrepo-mono-$n.code-workspace"
-    sleep 0.5
+    sleep 0.6
+    niri msg action set-column-width 30%
     
-    # 3. terminal
-    niri msg action spawn ghostty
-    sleep 0.5
+    # 2. terminal
+    niri msg action spawn ghostty --working-directory "$HOME/mycorp/myrepo-mono-$n/"
+    sleep 0.6
+    niri msg action set-column-width 30%
+    
+    # 3. broot (20% width)
+    niri msg action spawn ghostty -e broot "$HOME/mycorp/myrepo-mono-$n/"
+    sleep 0.6
+    niri msg action set-column-width 20%
     
     # 4. chrome
     niri msg action spawn google-chrome
-    sleep 0.5
+    sleep 0.6
+    niri msg action set-column-width 30%
     
     # 5. brave
     niri msg action spawn brave-origin
-    sleep 0.5
+    sleep 0.6
+    niri msg action set-column-width 30%
     
     # 6. gram editor
     if command -v gram &> /dev/null; then
@@ -38,7 +43,8 @@ for n in {2..5}; do
     else
         niri msg action spawn flatpak run app.liten.Gram "$HOME/mycorp/myrepo-mono-$n/"
     fi
-    sleep 0.5
+    sleep 0.6
+    niri msg action set-column-width 30%
 done
 
 # Return to workspace 1
