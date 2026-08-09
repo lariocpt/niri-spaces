@@ -1,0 +1,12 @@
+# Workspace 2 — terminal + firefox
+@workspace 2
+
+# Left: plain terminal
+com.mitchellh.ghostty | ghostty --title="ws2-terminal" | | term_id
+
+# Right: Firefox
+firefox | firefox | | firefox_id
+
+# 50/50 side by side
+@action [ -n "${term_id:-}" ] && niri msg action focus-window --id "$term_id" && niri msg action set-column-width "50%"
+@action [ -n "${firefox_id:-}" ] && niri msg action focus-window --id "$firefox_id" && niri msg action set-column-width "50%"

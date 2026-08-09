@@ -1,0 +1,14 @@
+# Workspace 1 — system monitor + browser
+@workspace 1
+
+# Left: zenith system monitor in ghostty
+com.mitchellh.ghostty | ghostty --title="ws1-zenith" -e zenith | | zenith_id
+
+# Right: Brave Origin (brave-origin-bin, installed via packages.txt)
+# NOTE: fields are split on `|`, so the launch command must not contain any
+# pipe characters (`||` in a $(command -v ...) fallback breaks the parser).
+brave | brave-origin | | brave_id
+
+# 50/50 side by side
+@action [ -n "${zenith_id:-}" ] && niri msg action focus-window --id "$zenith_id" && niri msg action set-column-width "50%"
+@action [ -n "${brave_id:-}" ] && niri msg action focus-window --id "$brave_id" && niri msg action set-column-width "50%"

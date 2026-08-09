@@ -22,9 +22,14 @@ shopt -u nullglob
 ln -sf "$REPO_DIR/niri-spaces" "$BIN_DIR/niri-spaces"
 ln -sf "$REPO_DIR/space-splash" "$BIN_DIR/space-splash"
 
-# 4. Add Niri keybind if not already present
+# 4. Add Niri keybind if not already present. The unified post-install config
+# splits the niri config into cfg/*.kdl includes, so check those too — its
+# keybinds.kdl already carries the Mod+Ctrl+Shift+S binding.
 NIRI_CONFIG="$HOME/.config/niri/config.kdl"
-if [ -f "$NIRI_CONFIG" ]; then
+NIRI_CFG_DIR="$HOME/.config/niri/cfg"
+if grep -qs 'niri-spaces menu' "$NIRI_CONFIG" "$NIRI_CFG_DIR"/*.kdl 2>/dev/null; then
+    echo "Niri keybind already present in the niri config."
+elif [ -f "$NIRI_CONFIG" ]; then
     if ! grep -q 'niri-spaces' "$NIRI_CONFIG"; then
         echo "Adding Mod+Ctrl+Shift+S shortcut to Niri config..."
         sed -i '/Mod+Shift+P { power-off-monitors; }/a \    Mod+Ctrl+Shift+S hotkey-overlay-title="Niri Spaces: Menu" { spawn "niri-spaces" "menu"; }' "$NIRI_CONFIG"
@@ -35,9 +40,12 @@ else
     echo "Warning: Niri config.kdl not found at $NIRI_CONFIG"
 fi
 
-# 5. Enable on startup
+# 5. Enable on startup — skip when the niri config itself already spawns
+# niri-spaces at startup (the unified config does, in cfg/autostart.kdl).
 STARTUP_SH="$HOME/.config/niri/startup.sh"
-if [ -f "$STARTUP_SH" ]; then
+if grep -qs 'niri-spaces start' "$NIRI_CONFIG" "$NIRI_CFG_DIR"/*.kdl 2>/dev/null; then
+    echo "Niri config already starts niri-spaces at startup — skipping startup.sh wiring."
+elif [ -f "$STARTUP_SH" ]; then
     if grep -q 'niri-wspaces-loader' "$STARTUP_SH"; then
         echo "Updating Niri startup.sh to use niri-spaces..."
         sed -i 's|niri-wspaces-loader.*|niri-spaces start|' "$STARTUP_SH"
@@ -46,7 +54,7 @@ if [ -f "$STARTUP_SH" ]; then
         echo -e "\n# Run generic spaces loader\nniri-spaces start" >> "$STARTUP_SH"
     fi
 else
-    echo "Warning: Niri startup.sh not found at $STARTUP_SH"
+    echo "Note: no startup.sh and no niri-spaces autostart found — add 'niri-spaces start' to your niri autostart."
 fi
 
 echo "niri-spaces installed successfully!"

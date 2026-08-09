@@ -1,7 +1,4 @@
-load system
-load playground
-load personal
-load myrepo-mono 1
-load myrepo-mono 2
-load myrepo-mono 3
-load myrepo-mono 4
+# niri-spaces autostart — run by `niri-spaces start` from niri's autostart.
+# Workspace 1: zenith + brave-origin; Workspace 2: terminal + firefox.
+load main
+load web

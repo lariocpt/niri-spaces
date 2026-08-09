@@ -1,40 +1,206 @@
 #!/usr/bin/env bash
-# Populates workspaces exactly as requested
+# niri-spaces — declarative workspace layout manager for niri.
+#
+#   niri-spaces load <name> [args...]   load spaces/<name>.space (or templates/<name>.space with $1..$9 substituted)
+#   niri-spaces start                   run every `load ...` line in ~/.config/niri-spaces/autostart
+#   niri-spaces menu                    pick a space interactively (fuzzel if available, else terminal)
+#   niri-spaces list                    list available spaces and templates
+#
+# Layout file format (.space) — parsing ported from niri-wspaces-loader:
+#   @workspace <name-or-index>
+#   <app_id> | <launch command> [| <env vars> [| <capture var>]]
+#   @action <shell command>            # may use captured window-id vars
+# Lines starting with # and blank lines are ignored.
+set -uo pipefail
 
-# Workspace 1
-niri msg action focus-workspace 1
-niri msg action spawn -- ghostty
-sleep 0.5
-niri msg action spawn -- google-chrome
-sleep 0.5
-niri msg action spawn -- brave-origin
-sleep 0.5
+CONFIG_DIR="${NIRI_SPACES_DIR:-$HOME/.config/niri-spaces}"
 
-# Workspaces 2 to 5
-for n in {1..4}; do
-    niri msg action focus-workspace-down
-    
-    # 1. vscodium
-    niri msg action spawn -- flatpak run com.vscodium.codium "$HOME/mycorp/myrepo-mono-$n/myrepo-mono-$n.code-workspace"
-    sleep 0.6
-    niri msg action set-column-width 30%
-    
-    # 2. terminal
-    niri msg action spawn -- ghostty --working-directory "$HOME/mycorp/myrepo-mono-$n/"
-    sleep 0.6
-    niri msg action set-column-width 30%
-    
-    # 3. broot (20% width)
-    niri msg action spawn -- ghostty -e broot "$HOME/mycorp/myrepo-mono-$n/"
-    sleep 0.6
-    niri msg action set-column-width 20%
-    
-
-    # 6. gram editor
-    niri msg action spawn -- flatpak run app.liten.Gram "$HOME/mycorp/myrepo-mono-$n/"
-    sleep 0.6
-    niri msg action set-column-width 30%
+# jq is not optional: launch_on_workspace diffs `niri msg --json windows` before and after
+# each spawn to learn the new window id. Without it that diff silently yields nothing, every
+# app hits the 10-second "no new window appeared" timeout, and @action lines that reference a
+# captured id get an empty value. The failure looks like niri being slow rather than a missing
+# dependency, so say so up front.
+#
+# It comes from packages.txt on a post-install machine; anywhere else it is one package.
+for _dep in jq niri; do
+    command -v "$_dep" >/dev/null 2>&1 || {
+        printf 'niri-spaces: %s is required but not on PATH\n' "$_dep" >&2
+        exit 1
+    }
 done
+unset _dep
 
-# Return to workspace 1
-niri msg action focus-workspace 1
+trim() {
+    local var="$*"
+    var="${var#"${var%%[![:space:]]*}"}"
+    var="${var%"${var##*[![:space:]]}"}"
+    printf '%s' "$var"
+}
+
+wait_for_niri() {
+    for _ in {1..30}; do
+        niri msg workspaces >/dev/null 2>&1 && return 0
+        sleep 0.2
+    done
+    echo "Error: niri is not running or not responding." >&2
+    return 1
+}
+
+# Spawn a command, watch for a new window with the given app_id, move it to the
+# target workspace. Echoes the new window id on success.
+launch_on_workspace() {
+    local target_ws="$1"
+    local app_id="$2"
+    shift 2
+    local cmd=("$@")
+
+    # Prefix match so e.g. "brave" covers brave-browser and brave-browser-nightly.
+    local jq_filter='.[] | select(.app_id != null) | select(.app_id | startswith($app)) | .id'
+    local pre_ids
+    pre_ids=$(niri msg --json windows | jq -r --arg app "$app_id" "$jq_filter")
+
+    setsid "${cmd[@]}" >/dev/null 2>&1 </dev/null &
+
+    for _ in {1..50}; do
+        local post_ids new_id
+        post_ids=$(niri msg --json windows | jq -r --arg app "$app_id" "$jq_filter")
+        new_id=$(comm -13 <(echo "$pre_ids" | sort) <(echo "$post_ids" | sort) | head -n 1)
+        if [ -n "$new_id" ] && [ "$new_id" != "null" ]; then
+            niri msg action move-window-to-workspace --window-id "$new_id" "$target_ws" >/dev/null 2>&1
+            echo "$new_id"
+            return 0
+        fi
+        sleep 0.2
+    done
+    echo "warning: no new '$app_id' window appeared within 10s (window left where it opened)" >&2
+    return 1
+}
+
+# Parse and execute one .space file (already template-substituted if needed).
+run_space_file() {
+    local ws_file="$1"
+    local current_ws=""
+    local line app_id cmd env_vars var_name win_id action_cmd
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=$(trim "$line")
+        [ -z "$line" ] && continue
+        [[ "$line" =~ ^# ]] && continue
+
+        if [[ "$line" =~ ^@workspace[[:space:]]+(.*) ]]; then
+            current_ws="${BASH_REMATCH[1]}"
+            echo "-> workspace: $current_ws"
+            continue
+        elif [[ "$line" =~ ^@action[[:space:]]+(.*) ]]; then
+            action_cmd="${BASH_REMATCH[1]}"
+            eval "$action_cmd" || echo "warning: @action failed: $action_cmd" >&2
+            continue
+        fi
+
+        IFS='|' read -r app_id cmd env_vars var_name <<< "$line"
+        app_id=$(trim "${app_id:-}")
+        cmd=$(trim "${cmd:-}")
+        env_vars=$(trim "${env_vars:-}")
+        var_name=$(trim "${var_name:-}")
+        { [ -z "$app_id" ] || [ -z "$cmd" ]; } && continue
+        if [ -n "$var_name" ]; then
+            eval "$var_name=\"\""
+        fi
+
+        echo "   launching $app_id: $cmd"
+        win_id=""
+        if [ -n "$env_vars" ]; then
+            win_id=$(eval "export $env_vars; launch_on_workspace \"\$current_ws\" \"\$app_id\" $cmd") || true
+        else
+            win_id=$(eval "launch_on_workspace \"\$current_ws\" \"\$app_id\" $cmd") || true
+        fi
+        if [ -n "$var_name" ] && [ -n "$win_id" ]; then
+            eval "$var_name=\"$win_id\""
+        fi
+    done < "$ws_file"
+}
+
+# Resolve a space name to a file; substitute $1..$9 for templates.
+# Prints the path of a ready-to-run file (may be a temp file).
+resolve_space() {
+    local name="$1"; shift
+    if [ -f "$CONFIG_DIR/spaces/$name.space" ]; then
+        printf '%s\n' "$CONFIG_DIR/spaces/$name.space"
+        return 0
+    fi
+    if [ -f "$CONFIG_DIR/templates/$name.space" ]; then
+        local tmp i
+        tmp=$(mktemp --suffix=".space")
+        cp "$CONFIG_DIR/templates/$name.space" "$tmp"
+        for i in $(seq 1 $#); do
+            sed -i "s/\$$i/$(printf '%s' "${!i}" | sed 's/[&/\]/\\&/g')/g" "$tmp"
+        done
+        printf '%s\n' "$tmp"
+        return 0
+    fi
+    echo "Error: no space or template named '$name' in $CONFIG_DIR" >&2
+    return 1
+}
+
+cmd_load() {
+    [ $# -ge 1 ] || { echo "usage: niri-spaces load <name> [args...]" >&2; return 1; }
+    local name="$1"; shift
+    wait_for_niri || return 1
+    local file
+    file=$(resolve_space "$name" "$@") || return 1
+    echo "Loading space '$name' ..."
+    run_space_file "$file"
+    case "$file" in /tmp/*) rm -f "$file" ;; esac
+    echo "Space '$name' loaded."
+}
+
+cmd_start() {
+    local autostart="$CONFIG_DIR/autostart"
+    [ -f "$autostart" ] || { echo "No autostart file at $autostart — nothing to do."; return 0; }
+    wait_for_niri || return 1
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=$(trim "$line")
+        [ -z "$line" ] && continue
+        [[ "$line" =~ ^# ]] && continue
+        if [[ "$line" =~ ^load[[:space:]]+(.*) ]]; then
+            # shellcheck disable=SC2086
+            cmd_load ${BASH_REMATCH[1]}
+        else
+            echo "warning: unrecognized autostart line: $line" >&2
+        fi
+    done < "$autostart"
+    # Land on the first workspace when done.
+    niri msg action focus-workspace 1 >/dev/null 2>&1 || true
+}
+
+cmd_list() {
+    local f
+    echo "Spaces ($CONFIG_DIR/spaces):"
+    for f in "$CONFIG_DIR"/spaces/*.space; do [ -f "$f" ] && echo "  $(basename "$f" .space)"; done
+    echo "Templates ($CONFIG_DIR/templates) — need args:"
+    for f in "$CONFIG_DIR"/templates/*.space; do [ -f "$f" ] && echo "  $(basename "$f" .space)"; done
+    return 0
+}
+
+cmd_menu() {
+    local names=() f pick
+    for f in "$CONFIG_DIR"/spaces/*.space; do [ -f "$f" ] && names+=("$(basename "$f" .space)"); done
+    [ ${#names[@]} -gt 0 ] || { echo "No spaces defined in $CONFIG_DIR/spaces." >&2; return 1; }
+    if command -v fuzzel >/dev/null 2>&1 && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        pick=$(printf '%s\n' "${names[@]}" | fuzzel --dmenu --prompt "niri-space> ") || return 0
+    else
+        echo "Select a space to load:"
+        select pick in "${names[@]}"; do [ -n "$pick" ] && break; done
+    fi
+    [ -n "$pick" ] && cmd_load "$pick"
+}
+
+case "${1:-}" in
+    load)  shift; cmd_load "$@" ;;
+    start) cmd_start ;;
+    list)  cmd_list ;;
+    menu)  cmd_menu ;;
+    -h|--help|"") sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) echo "unknown subcommand: $1 (try: load, start, menu, list)" >&2; exit 1 ;;
+esac
