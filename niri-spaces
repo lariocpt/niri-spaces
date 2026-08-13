@@ -30,6 +30,48 @@ for _dep in jq niri; do
 done
 unset _dep
 
+# First command in the list that actually exists on this machine.
+pick_first() {
+    local c
+    for c in "$@"; do
+        command -v "$c" >/dev/null 2>&1 && { printf '%s' "$c"; return 0; }
+    done
+    return 1
+}
+
+# The app_id a given launch command reports to the compositor. Matching in
+# launch_on_workspace is a prefix match, so a bare family name is enough.
+app_id_for() {
+    case "$(basename "${1%% *}")" in
+        ghostty)                        printf 'com.mitchellh.ghostty' ;;
+        alacritty)                      printf 'Alacritty' ;;
+        wezterm|wezterm-gui)            printf 'org.wezfurlong.wezterm' ;;
+        foot|footclient)                printf 'foot' ;;
+        brave*)                         printf 'brave' ;;
+        google-chrome*)                 printf 'google-chrome' ;;
+        firefox*)                       printf 'firefox' ;;
+        *)                              printf '%s' "$(basename "${1%% *}")" ;;
+    esac
+}
+
+# Portable defaults so the shipped spaces work on any machine. Anything already
+# exported wins — set TERMINAL/BROWSER yourself to override the autodetection.
+#
+# The terminal candidates are limited to emulators that accept `--title=X -e CMD`,
+# because spaces/main.space uses exactly that to run zenith. wezterm (`start --`)
+# and xterm (`-title`) do not, so they are not autodetected — app_id_for still
+# maps wezterm for anyone who exports TERMINAL=wezterm deliberately, but then
+# main.space's zenith line is on them.
+resolve_defaults() {
+    : "${TERMINAL:=$(pick_first ghostty foot alacritty kitty)}"
+    : "${BROWSER:=$(pick_first brave-origin brave firefox google-chrome chromium)}"
+    [ -n "${TERMINAL:-}" ] || echo "warning: no terminal found (set \$TERMINAL)" >&2
+    [ -n "${BROWSER:-}" ]  || echo "warning: no browser found (set \$BROWSER)" >&2
+    : "${TERMINAL_APPID:=$(app_id_for "${TERMINAL:-}")}"
+    : "${BROWSER_APPID:=$(app_id_for "${BROWSER:-}")}"
+    export TERMINAL BROWSER TERMINAL_APPID BROWSER_APPID
+}
+
 trim() {
     local var="$*"
     var="${var#"${var%%[![:space:]]*}"}"
@@ -99,6 +141,10 @@ run_space_file() {
 
         IFS='|' read -r app_id cmd env_vars var_name <<< "$line"
         app_id=$(trim "${app_id:-}")
+        # The command field is eval'd below, so it expands $VARS for free; the
+        # app_id field is used as a literal, so expand it here too. Lets a space
+        # file say `$TERMINAL_APPID | $TERMINAL` and stay machine-agnostic.
+        case "$app_id" in *'$'*) app_id=$(eval "printf '%s' \"$app_id\"") ;; esac
         cmd=$(trim "${cmd:-}")
         env_vars=$(trim "${env_vars:-}")
         var_name=$(trim "${var_name:-}")
@@ -146,6 +192,7 @@ cmd_load() {
     [ $# -ge 1 ] || { echo "usage: niri-spaces load <name> [args...]" >&2; return 1; }
     local name="$1"; shift
     wait_for_niri || return 1
+    resolve_defaults
     local file
     file=$(resolve_space "$name" "$@") || return 1
     echo "Loading space '$name' ..."

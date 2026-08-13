@@ -1,12 +1,16 @@
-# Workspace Name
+# Single workspace — terminal + browser
+#
+# Portable: $TERMINAL / $BROWSER are resolved by niri-spaces at load time.
+# No zenith here — this is the plain fallback space; see spaces/main.space for
+# the fleet's real workspace 1.
 @workspace default
 
-# Screen 1 - Left Column: Terminal
-com.mitchellh.ghostty | ghostty | | terminal_id
+# Left: terminal
+$TERMINAL_APPID | $TERMINAL | | terminal_id
 
-# Screen 1 - Right Column: Browser
-google-chrome | google-chrome --new-window about:blank | | browser_id
+# Right: browser
+$BROWSER_APPID | $BROWSER | | browser_id
 
-# Position Screen 1
-@action [ -n "$terminal_id" ] && niri msg action focus-window --id "$terminal_id" && niri msg action set-column-width "50%"
-@action [ -n "$browser_id" ] && niri msg action focus-window --id "$browser_id" && niri msg action set-column-width "50%"
+# 50/50 side by side
+@action [ -n "${terminal_id:-}" ] && niri msg action focus-window --id "$terminal_id" && niri msg action set-column-width "50%"
+@action [ -n "${browser_id:-}" ] && niri msg action focus-window --id "$browser_id" && niri msg action set-column-width "50%"

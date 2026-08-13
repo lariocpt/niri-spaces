@@ -1,14 +1,20 @@
 # Workspace 1 — system monitor + browser
+#
+# $TERMINAL / $BROWSER (and their app_ids) are resolved by niri-spaces at load
+# time: whatever you have exported wins, otherwise the first installed option is
+# autodetected. The pair below is what the fleet actually runs — zenith on the
+# left, browser on the right — it is just no longer hardcoded to ghostty/brave.
+#
+# NOTE: fields are split on `|`, so a launch command must not contain a pipe
+# character — no `||` fallbacks inline; set $TERMINAL/$BROWSER instead.
 @workspace 1
 
-# Left: zenith system monitor in ghostty
-com.mitchellh.ghostty | ghostty --title="ws1-zenith" -e zenith | | zenith_id
+# Left: zenith system monitor in the resolved terminal
+$TERMINAL_APPID | $TERMINAL --title="ws1-zenith" -e zenith | | zenith_id
 
-# Right: Brave Origin (brave-origin-bin, installed via packages.txt)
-# NOTE: fields are split on `|`, so the launch command must not contain any
-# pipe characters (`||` in a $(command -v ...) fallback breaks the parser).
-brave | brave-origin | | brave_id
+# Right: browser (brave-origin on a post-install machine)
+$BROWSER_APPID | $BROWSER | | browser_id
 
 # 50/50 side by side
 @action [ -n "${zenith_id:-}" ] && niri msg action focus-window --id "$zenith_id" && niri msg action set-column-width "50%"
-@action [ -n "${brave_id:-}" ] && niri msg action focus-window --id "$brave_id" && niri msg action set-column-width "50%"
+@action [ -n "${browser_id:-}" ] && niri msg action focus-window --id "$browser_id" && niri msg action set-column-width "50%"

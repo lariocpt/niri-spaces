@@ -1,4 +1,6 @@
 # niri-spaces autostart — run by `niri-spaces start` from niri's autostart.
-# Workspace 1: zenith + brave-origin; Workspace 2: terminal + firefox.
+# Workspace 1: zenith + browser. Workspace 2: terminal + browser.
+# The terminal and browser are autodetected per machine; export TERMINAL/BROWSER
+# to override.
 load main
 load web
