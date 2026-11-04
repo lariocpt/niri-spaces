@@ -1,0 +1,3 @@
+# Python bytecode the docs tooling leaves behind when run locally.
+__pycache__/
+*.py[cod]
