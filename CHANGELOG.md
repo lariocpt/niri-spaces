@@ -87,6 +87,12 @@ piped-and-hoped.
   is then on them.
 - **Workspace command dispatch, the autostart load loop, and the app-spawn commands**
   had their bugs fixed in one pass over the layout framework.
+- **`--prefix` promised a directory it does not use.** Both help texts said "where the
+  bins go", while the installer appends `bin` to the value — so the flag is an install
+  root. A reader who took the help literally and passed `--prefix=$HOME/.local/bin` got
+  the bins in `~/.local/bin/bin`, with a PATH warning about a directory nobody chose.
+  The help and the README now say install root, bins in `DIR/bin`, which is what the
+  `$PREFIX/bin` line in this section always described.
 
 <!-- Link definitions live at the bottom (Keep a Changelog convention). They are
      kept OUT of any release note: release.yml stops extracting at the first line

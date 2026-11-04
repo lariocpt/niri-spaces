@@ -58,8 +58,8 @@ only where they don't already exist, so a file you edited is kept.
 **It does not edit your niri config.** It prints the keybind line to add and
 leaves the decision to you.
 
-`--prefix=DIR` moves the bins, `-h` shows all the options, and
-`NIRI_SPACES_REPO` points it at a fork.
+`--prefix=DIR` sets the install root — the bins land in `DIR/bin` — `-h` shows all the
+options, and `NIRI_SPACES_REPO` points it at a fork.
 
 ## Then wire it up in niri
 

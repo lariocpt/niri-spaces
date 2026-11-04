@@ -40,7 +40,7 @@
 #
 # Options (env var in brackets):
 #   vX.Y.Z, --tag=vX.Y.Z        install one release, not the latest    [NIRI_SPACES_VERSION]
-#   --prefix=DIR                where the bins go, default ~/.local    [NIRI_SPACES_PREFIX]
+#   --prefix=DIR                install root; bins go in DIR/bin, default ~/.local  [NIRI_SPACES_PREFIX]
 #   -n, --dry-run               verify and print every action; write nothing outside $TMPDIR
 #   -h, --help                  this text
 #
@@ -71,7 +71,7 @@ install.sh — install niri-spaces from its published GitHub release.
 
 Options (env var in brackets):
   vX.Y.Z, --tag=vX.Y.Z        install one release, not the latest    [NIRI_SPACES_VERSION]
-  --prefix=DIR                where the bins go, default ~/.local    [NIRI_SPACES_PREFIX]
+  --prefix=DIR                install root; bins go in DIR/bin, default ~/.local  [NIRI_SPACES_PREFIX]
   -n, --dry-run               verify and print every action; write nothing outside $TMPDIR
   --file=PATH.tar.gz          testing hook: install from a local artifact (CI only)
   --sha256=HEX                expected hash for --file (else the <PATH.tar.gz>.sha256 sidecar)
