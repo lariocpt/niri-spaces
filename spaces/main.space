@@ -2,7 +2,7 @@
 #
 # $TERMINAL / $BROWSER (and their app_ids) are resolved by niri-spaces at load
 # time: whatever you have exported wins, otherwise the first installed option is
-# autodetected. The pair below is what the fleet actually runs — zenith on the
+# autodetected. The pair below is the intended everyday layout — zenith on the
 # left, browser on the right — it is just no longer hardcoded to ghostty/brave.
 #
 # NOTE: fields are split on `|`, so a launch command must not contain a pipe

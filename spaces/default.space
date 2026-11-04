@@ -2,7 +2,7 @@
 #
 # Portable: $TERMINAL / $BROWSER are resolved by niri-spaces at load time.
 # No zenith here — this is the plain fallback space; see spaces/main.space for
-# the fleet's real workspace 1.
+# the fuller workspace 1.
 @workspace default
 
 # Left: terminal
