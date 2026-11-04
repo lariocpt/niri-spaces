@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # --help is generated from the header comment block at the top of niri-spaces
-# (the dispatcher extracts it with awk, stopping at the first non-# line). These
-# tests pin the two things that used to break: the extraction must not run past
+# (extracted with awk, stopping at the first non-# line) and answered before the
+# dependency preflight, so it works on a machine where nothing is installed yet.
+# These tests pin the two things that used to break: the extraction must not run past
 # the comment block into the executable lines (the old `sed -n '2,15p'` leaked
 # `set -uo pipefail`), and it must advertise ONLY the subcommands the dispatcher
 # actually implements (load/start/menu/list) — never the workspace verbs the
@@ -58,4 +59,23 @@ run_help() {
     run env PATH="$d" "$NS_CLI" switch now
     [ "$status" -eq 1 ]
     [[ "$output" == *"unknown subcommand: switch"* ]]
+}
+
+# The defect that broke the release gate: --help sat behind the jq/niri preflight, so
+# on any machine missing either tool it exited 1 with a dependency error and printed
+# nothing. A page gate that compares itself to `--help` then reported every real verb
+# as missing, and pointed at the page. Help is what you read to find out what to
+# install, so it must not need the things it is telling you about.
+@test "help: answered on a machine with neither niri nor jq installed" {
+    run env PATH="$(build_min_path sh bash awk)" "$NS_CLI" --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"niri-spaces load "* ]]
+    [[ "$output" != *"required but not on PATH"* ]]
+}
+
+@test "help: bare invocation is help, not a dependency error" {
+    run env PATH="$(build_min_path sh bash awk)" "$NS_CLI"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"declarative workspace layout manager"* ]]
+    [[ "$output" != *"required but not on PATH"* ]]
 }

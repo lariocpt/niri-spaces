@@ -17,6 +17,23 @@ set -uo pipefail
 
 CONFIG_DIR="${NIRI_SPACES_DIR:-$HOME/.config/niri-spaces}"
 
+# The test suite sources this file to exercise single functions (resolve_defaults and
+# friends) without launching anything. Under sourcing, none of the script's top-level
+# side effects belong to the caller: no help, no dependency check, no dispatch, and no
+# exit that would kill the shell doing the sourcing. Executed as a program, $0 is this
+# file, and everything below runs as normal.
+ns_sourced=1
+[ "${BASH_SOURCE[0]:-$0}" = "$0" ] && ns_sourced=0
+
+# Answered before anything else, dependency check included. Usage text that first demands
+# niri and jq cannot be read on the machine where you are still working out what to install
+# -- and it silently handed the page gate an empty --help, which then blamed the page.
+if [ "$ns_sourced" -eq 0 ]; then
+    case "${1:-}" in
+        -h|--help|"") awk 'NR==1{next} /^#/{sub(/^#[[:space:]]?/,"");print;next} {exit}' "$0"; exit 0 ;;
+    esac
+fi
+
 # jq is not optional: launch_on_workspace diffs `niri msg --json windows` before and after
 # each spawn to learn the new window id. Without it that diff silently yields nothing, every
 # app hits the 10-second "no new window appeared" timeout, and @action lines that reference a
@@ -24,13 +41,15 @@ CONFIG_DIR="${NIRI_SPACES_DIR:-$HOME/.config/niri-spaces}"
 # dependency, so say so up front.
 #
 # It comes from packages.txt on a post-install machine; anywhere else it is one package.
-for _dep in jq niri; do
-    command -v "$_dep" >/dev/null 2>&1 || {
-        printf 'niri-spaces: %s is required but not on PATH\n' "$_dep" >&2
-        exit 1
-    }
-done
-unset _dep
+if [ "$ns_sourced" -eq 0 ]; then
+    for _dep in jq niri; do
+        command -v "$_dep" >/dev/null 2>&1 || {
+            printf 'niri-spaces: %s is required but not on PATH\n' "$_dep" >&2
+            exit 1
+        }
+    done
+    unset _dep
+fi
 
 # First command in the list that actually exists on this machine.
 pick_first() {
@@ -253,11 +272,17 @@ cmd_menu() {
     [ -n "$pick" ] && cmd_load "$pick"
 }
 
-case "${1:-}" in
-    load)  shift; cmd_load "$@" ;;
-    start) cmd_start ;;
-    list)  cmd_list ;;
-    menu)  cmd_menu ;;
-    -h|--help|"") awk 'NR==1{next} /^#/{sub(/^#[[:space:]]?/,"");print;next} {exit}' "$0" ;;
-    *) echo "unknown subcommand: $1 (try: load, start, menu, list)" >&2; exit 1 ;;
-esac
+# Dispatch is the program's entry point, so it is the one thing a sourcing shell must
+# not run: with no guard, `source niri-spaces` reached the unknown-subcommand arm and
+# exited the test's own shell.
+if [ "$ns_sourced" -eq 0 ]; then
+    case "${1:-}" in
+        load)  shift; cmd_load "$@" ;;
+        start) cmd_start ;;
+        list)  cmd_list ;;
+        menu)  cmd_menu ;;
+        # -h/--help/"" never reach here: answered above the dependency preflight, so
+        # help does not require the tools it is there to tell you about.
+        *) echo "unknown subcommand: $1 (try: load, start, menu, list)" >&2; exit 1 ;;
+    esac
+fi

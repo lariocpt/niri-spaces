@@ -88,6 +88,23 @@ def _is_external(url):
     return bool(re.match(r'(?:https?:)?//', url)) or url.lower().startswith("data:text/html")
 
 
+def cli_help():
+    """The CLI's own --help, or a hard stop naming the CLI as the failure.
+
+    An empty --help is what this gate once received when the CLI died inside its own
+    dependency preflight: every verb then looked unadvertised and the blame landed on the
+    page. A CLI that cannot answer --help is the bug, so say that instead.
+    """
+    r = subprocess.run([CLI, "--help"], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"{CLI} --help exited {r.returncode}: "
+                 f"{(r.stderr or r.stdout).strip()[:200]}")
+    text = r.stdout.strip()
+    if not text:
+        sys.exit(f"{CLI} --help printed nothing; the page cannot be checked against it")
+    return text
+
+
 def check_public_text(name, raw, helptext):
     """Claims shared by every public text artifact: README.md and docs/index.html.
 
@@ -118,6 +135,9 @@ def check_public_text(name, raw, helptext):
     # A README code fence may advertise a subcommand; it must exist. Checked
     # against --help rather than against prose, so a renamed verb cannot survive.
     real = set(re.findall(r'^\s+niri-spaces\s+([\w-]+)', helptext, re.M))
+    if not real:
+        # Never blame the artifact for a help text that lists nothing.
+        errors.append(f"{name}: the CLI's --help lists no subcommands to check against")
     for verb in set(re.findall(r'^\s*niri-spaces\s+([a-z][\w-]*)', raw, re.M)):
         if verb in ("--help",):
             continue
@@ -182,9 +202,7 @@ def check(raw):
         errors.append("install snippet does not pipe the Pages installer to sh")
 
     # 4. Commands block == `--help` verbatim.
-    helptext = subprocess.run(
-        [CLI, "--help"], capture_output=True, text=True,
-    ).stdout.strip()
+    helptext = cli_help()
     unescaped = html.unescape(raw)
     if helptext not in unescaped:
         errors.append("the Commands block is not `niri-spaces --help` verbatim")
@@ -215,9 +233,7 @@ def check(raw):
 
 
 def main():
-    helptext = subprocess.run(
-        [CLI, "--help"], capture_output=True, text=True,
-    ).stdout.strip()
+    helptext = cli_help()
 
     errs = []
     for name, path in (("README.md", README), ("docs/index.html", PAGE)):

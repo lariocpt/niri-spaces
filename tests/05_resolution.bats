@@ -1,9 +1,11 @@
 #!/usr/bin/env bats
 # (e) $TERMINAL/$BROWSER/$*_APPID resolution and app_id derivation. These drive
-# resolve_defaults (niri-spaces:65) in a hermetic PATH: only the stub apps a test
-# installs are visible, and the real host's apps can never leak in. The CLI file
-# is sourced with a harmless empty dispatcher arg so the function is callable in
-# isolation while the real jq preflight still passes.
+# resolve_defaults in a hermetic PATH: only the stub apps a test installs are
+# visible, and the real host's apps can never leak in. The CLI file is sourced, and
+# it detects that (BASH_SOURCE vs $0) and skips help, its dependency preflight and
+# its dispatcher, so the functions are callable in isolation in a shell that survives
+# the source. The empty argument is a leftover of the earlier contract, when the
+# sourced file reached the dispatcher and needed a harmless one.
 
 load helpers/setup
 setup() { ns_setup; }
