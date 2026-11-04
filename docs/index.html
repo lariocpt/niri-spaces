@@ -9,6 +9,11 @@
   :root{
     --bg:#0d1117; --panel:#161b22; --border:#30363d; --fg:#e6edf3; --dim:#8b949e;
     --accent:#7ee787; --accent2:#79c0ff; --warn:#d29922;
+    /* --border is a decoration colour (#30363d, 1.551:1 on --bg), which is right for
+       card edges and rules and wrong for anything you are meant to notice as a
+       control. --edge is the outline on clickable things: 3.2:1, the WCAG 1.4.11
+       floor for a non-text cue, and the faintest tested value that clears it. */
+    --edge:#5c6570;
   }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth}
@@ -17,8 +22,16 @@
     font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     -webkit-font-smoothing:antialiased;
   }
-  a{color:var(--accent2); text-decoration:none}
+  /* Underlined by default. Colour alone set the links apart from the prose they sit
+     in, and #79c0ff against #8b949e text is 1.58:1: nothing but hue distinguished a
+     link from the sentence around it (WCAG 1.4.1). The colour measured 9.73:1
+     against --bg, so it was never the contrast that was wrong, only the cue. */
+  a{color:var(--accent2); text-decoration:underline; text-underline-offset:2px}
   a:hover{text-decoration:underline}
+  /* Nothing on the page had a focus style, so each element fell back to whatever the
+     browser draws. --accent is 12.317:1 on --bg and 11.258:1 on --panel, clearing the
+     3:1 WCAG 1.4.11 floor for a focus indicator on both surfaces. */
+  :focus-visible{outline:2px solid var(--accent); outline-offset:2px}
   code,pre,.splash{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
   .wrap{max-width:920px; margin:0 auto; padding:0 20px}
   header{padding:64px 0 24px; text-align:center}
@@ -31,19 +44,30 @@
   pre.splash{margin:0; color:var(--accent); font-size:14px; line-height:1.35;
     overflow-x:auto; max-width:100%}
   .cta{display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin:26px 0 8px}
-  .btn{display:inline-block; padding:11px 20px; border-radius:8px; font-weight:600; font-size:15px}
+  .btn{display:inline-block; padding:11px 20px; border-radius:8px; font-weight:600; font-size:15px;
+    text-decoration:none}
   .btn.primary{background:var(--accent); color:#04120a}
-  .btn.ghost{border:1px solid var(--border); color:var(--fg)}
+  /* The ghost button's only indication that it is a button at all was this border. At
+     1.551:1 it vanished on a dark screen and the link read as a sentence fragment. */
+  .btn.ghost{border:1px solid var(--edge); color:var(--fg)}
   nav{position:sticky; top:0; z-index:5; background:rgba(13,17,23,.9); backdrop-filter:blur(6px);
     border-bottom:1px solid var(--border)}
   nav ul{list-style:none; display:flex; gap:22px; justify-content:center; flex-wrap:wrap; margin:0; padding:12px}
-  nav a{color:var(--dim); font-size:14px}
+  nav a{color:var(--dim); font-size:14px; text-decoration:none}
   nav a:hover{color:var(--fg); text-decoration:none}
   section{padding:40px 0; border-bottom:1px solid var(--border)}
   h2{font-size:24px; margin:0 0 14px}
-  h2 .h{color:var(--border); font-weight:400; margin-left:8px; font-size:18px}
+  /* Was var(--border) — a divider colour doing duty as text, 1.551:1 on --bg. The
+     subtitle under every heading was effectively invisible. --dim is the page's own
+     quiet-text token: 6.153:1 on --bg, 5.624:1 on --panel, so it holds wherever a
+     heading lands. */
+  h2 .h{color:var(--dim); font-weight:400; margin-left:8px; font-size:18px}
   p{margin:0 0 14px}
   .lead{color:var(--dim)}
+  /* overflow-x:auto makes each block a scroll region, and a scroll region a keyboard
+     cannot reach hides its right-hand half: on a phone the command ends at the edge of
+     the screen and stays there. tabindex="0" is on each one in the markup so Tab
+     reaches it and the arrow keys (and the pan that follows a focused region) work. */
   pre.block{background:var(--panel); border:1px solid var(--border); border-radius:10px;
     padding:16px; overflow-x:auto; max-width:100%; min-width:0; font-size:13.5px; line-height:1.5}
   .cap{font-size:13px; color:var(--dim); margin:-6px 0 16px}
@@ -76,9 +100,9 @@
     <a class="btn primary" href="#install">Install</a>
     <a class="btn ghost" href="https://github.com/lariocpt/niri-spaces">Source on GitHub</a>
   </div>
-  <div class="hero" aria-label="space-splash preview">
+  <div class="hero" role="img" aria-label="space-splash preview">
 <!-- BEGIN GENERATED SHOWCASE (tools/gen-showcase.py) -->
-<pre class="splash">
+<pre class="splash" tabindex="0">
     ┌────────────────────────────────────────────────────┐
     │                 ▐   ▐ ▐▀▀▀  ▐▀▀▄                   │
     │                 ▐   ▐ ▐▀▀   ▐▄▄▀                   │
@@ -124,17 +148,17 @@
   <section id="install">
     <h2>Install <span class="h">one command</span></h2>
     <p>The installer downloads the pinned release, checks its SHA-256 before running anything, and copies the CLI, the splash and the example spaces into <code>~/.config/niri-spaces</code>. It writes an <code>autostart</code> file you can edit.</p>
-    <pre class="block" id="install-cmd">curl -fsSL https://lariocpt.github.io/niri-spaces/install.sh | sh</pre>
+    <pre class="block" id="install-cmd" tabindex="0">curl -fsSL https://lariocpt.github.io/niri-spaces/install.sh | sh</pre>
     <p class="cap">Read before you run it: <a href="https://lariocpt.github.io/niri-spaces/install.sh">the installer source</a>.</p>
     <p>After installing, load a space and you have a layout:</p>
-    <pre class="block">niri-spaces load default</pre>
+    <pre class="block" tabindex="0">niri-spaces load default</pre>
     <div class="note">The installer prints the <code>niri</code> keybind you can add to your config to open the picker — it does <strong>not</strong> edit your config for you. You decide where the keys go.</div>
   </section>
 
   <section id="cli">
     <h2>Commands <span class="h">niri-spaces --help</span></h2>
     <p>Four subcommands, and that is the whole surface:</p>
-    <pre class="block" id="help-text">niri-spaces — declarative workspace layout manager for niri.
+    <pre class="block" id="help-text" tabindex="0">niri-spaces — declarative workspace layout manager for niri.
 
   niri-spaces load &lt;name&gt; [args...]   load spaces/&lt;name&gt;.space (or templates/&lt;name&gt;.space with $1..$9 substituted)
   niri-spaces start                   run every `load ...` line in ~/.config/niri-spaces/autostart
@@ -154,7 +178,7 @@ Lines starting with # and blank lines are ignored.</pre>
   <section id="format">
     <h2>The .space format <span class="h">workspace line, app lines, actions</span></h2>
     <p>A file is read top to bottom. A <code>@workspace</code> line sets the current workspace; every app line after it lands there.</p>
-    <div class="table-scroll">
+    <div class="table-scroll" tabindex="0">
     <table>
       <thead><tr><th>Line</th><th>Meaning</th></tr></thead>
       <tbody>
@@ -171,7 +195,7 @@ Lines starting with # and blank lines are ignored.</pre>
   <section id="example">
     <h2>An example space <span class="h">spaces/default.space</span></h2>
     <p>Here is the space the installer ships as the fallback. It opens a terminal and a browser side by side on a single workspace, capturing each window id so the actions can size them 50/50.</p>
-    <pre class="block"># Single workspace — terminal + browser
+    <pre class="block" tabindex="0"># Single workspace — terminal + browser
 #
 # Portable: $TERMINAL / $BROWSER are resolved by niri-spaces at load time.
 @workspace default

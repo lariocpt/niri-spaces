@@ -128,7 +128,9 @@ def wrap(splash_out, style):
     a fenced block for the README. Same bytes, two containers."""
     if style == "html":
         indented = "\n".join("    " + ln for ln in splash_out.rstrip("\n").split("\n"))
-        return "{b}\n<pre class=\"splash\">\n{body}\n</pre>\n{e}".format(
+        # tabindex: the art is wider than a phone, and pre.splash scrolls sideways.
+        # A scroll region with no tab stop is a region whose right half cannot be read.
+        return "{b}\n<pre class=\"splash\" tabindex=\"0\">\n{body}\n</pre>\n{e}".format(
             b=BEGIN, body=indented, e=END)
     return "{b}\n```text\n{body}\n```\n{e}".format(
         b=BEGIN, body=splash_out.rstrip("\n"), e=END)
