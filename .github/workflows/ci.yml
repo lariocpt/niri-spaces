@@ -41,8 +41,8 @@ jobs:
           # lint it AS sh: on the runner /bin/sh is dash, and shellcheck -s sh flags the
           # GNU-isms (arrays, [[ ]], local) that would parse in bash and die on the
           # dash/ash/busybox host that actually ran the curl.
-          sh -n install.sh
-          shellcheck -s sh install.sh
+          sh -n docs/install.sh
+          shellcheck -s sh docs/install.sh
 
       - name: The CLI and the test harness are clean
         run: |
@@ -54,6 +54,15 @@ jobs:
           bash -n niri-spaces
           shellcheck -x niri-spaces
           shellcheck -x tests/helpers/setup.bash tests/helpers/stubs/niri tests/helpers/stubs/winapp
+
+      - name: The Python tools compile
+        run: |
+          set -euo pipefail
+          # space-splash and the site tooling are Python 3, not shell, so shellcheck
+          # cannot read them. Byte-compiling each catches a syntax error a reviewer
+          # would otherwise only hit by running the splash or the docs gate.
+          python3 -m py_compile space-splash
+          python3 -m py_compile tools/gen-showcase.py tools/check-site.py
 
   # Gate 2: the behavioural suite. It is the only thing that says a space still
   # loads the way the window-diff, the resolution order and the installer's
@@ -81,29 +90,30 @@ jobs:
       - name: Run the suite
         run: bats tests/
 
+  # Gate 3: the docs page. It is the front door every `curl | sh` reader passes
+  # through, so it is gated like code: the generator that draws the hero must
+  # reproduce the committed bytes exactly (--check), and a checker must prove the
+  # page makes no claim the CLI can't back up and loads nothing from the network.
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Regenerate the hero showcase and prove it is committed
+        run: python3 tools/gen-showcase.py --check
+
+      - name: The page matches the CLI and loads nothing external
+        run: python3 tools/check-site.py
+
   # ---------------------------------------------------------------------------
-  # SITE GATE — deliberately NOT enabled, and left here rather than invented
-  # half-wired. The moment this project serves its installer, the biggest risk is
-  # that the bytes a `curl | sh` reader runs are NOT the bytes this repo reviewed:
-  # a Pages deploy serving a stale install.sh, or a release asset swapped out from
-  # under the .sha256 that is supposed to vouch for it. The two commented checks
-  # below are the gate that closes that gap.
-  #
-  # It stays commented until the commit that also lands a Pages workflow and the
-  # release.yml that publishes the pinned tag. A gate with nothing in front of it
-  # is worse than no gate: a green check reads as a guarantee that the thing it
-  # claims to check does not exist yet. Enable both together, not before.
+  # SERVED-BYTES GATE — deliberately NOT enabled here. The check below proves the
+  # bytes a `curl | sh` reader runs are the bytes this repo reviewed, but it can
+  # only exist once Pages actually serves docs/install.sh and release.yml
+  # publishes a pinned tag. Until both do, the URLs below are empty and a green
+  # "pass" would certify a thing that does not exist. It belongs in the Pages
+  # pipeline (pages.yml), next to the deploy it guards — not as a CI job whose
+  # whole value is a comparison against a URL that 404s. Enable it there when the
+  # first Pages deploy lands, not before.
   # ---------------------------------------------------------------------------
-  # site:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: The installer we serve is the installer we reviewed
-  #       run: |
-  #         set -euo pipefail
-  #         curl -fsSL "$NIRI_SPACES_INSTALLER_URL" -o served.sh
-  #         cmp install.sh served.sh
-  #     - name: The pinned release still verifies end to end
-  #       run: |
-  #         set -euo pipefail
-  #         sh install.sh --tag="$NIRI_SPACES_PINNED_TAG" --dry-run
+  #   curl -fsSL "$NIRI_SPACES_INSTALLER_URL" -o served.sh && cmp docs/install.sh served.sh
+  #   sh docs/install.sh --tag="$NIRI_SPACES_PINNED_TAG" --dry-run
