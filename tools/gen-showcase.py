@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Generate the hero showcase shown on the docs page, from the real splash.
+"""Generate the hero showcase shown on the docs page and in the README, from the
+real splash.
 
-The page renders `space-splash` against a throwaway git repo so the picture is
-the program's actual output, not a screenshot of a moment in time. Two things in
-the splash would otherwise make that output drift and so defeat `--check`:
+The page and the README both render `space-splash` against a throwaway git repo so
+the picture is the program's actual output, not a screenshot of a moment in time.
+Two things in the splash would otherwise make that output drift and so defeat
+`--check`:
 
   * the commit line is `git log -1 --format='%s (%cr)'` — the `%cr` "3 hours ago"
     ages forever, so a committed copy would differ from a regenerated one;
@@ -16,7 +18,7 @@ status and box width are all real splash output; only the relative-time suffix i
 frozen, which is exactly the part that could not be made stable by pinning a date
 (`%cr` measures distance to *now*).
 
-Run with `--check` to fail if docs/index.html's showcase block no longer matches
+Run with `--check` to fail if either document's showcase block no longer matches
 a fresh generation.
 """
 import os
@@ -121,14 +123,28 @@ def render_splash():
         shutil.rmtree(os.path.join(tmp, scratch_root), ignore_errors=True)
 
 
-def wrap(splash_out):
-    indented = "\n".join("    " + ln for ln in splash_out.rstrip("\n").split("\n"))
-    return "{b}\n<pre class=\"splash\">\n{body}\n</pre>\n{e}".format(
-        b=BEGIN, body=indented, e=END)
+def wrap(splash_out, style):
+    """Embed the art in the target's own dialect: an HTML <pre> for the page,
+    a fenced block for the README. Same bytes, two containers."""
+    if style == "html":
+        indented = "\n".join("    " + ln for ln in splash_out.rstrip("\n").split("\n"))
+        return "{b}\n<pre class=\"splash\">\n{body}\n</pre>\n{e}".format(
+            b=BEGIN, body=indented, e=END)
+    return "{b}\n```text\n{body}\n```\n{e}".format(
+        b=BEGIN, body=splash_out.rstrip("\n"), e=END)
 
 
-def read_page():
-    with open(PAGE) as f:
+# The same real splash output appears on the page and at the top of the README.
+# Splicing it into both is the point: neither document can drift from what the
+# program prints, and neither can claim a picture the program does not draw.
+TARGETS = (
+    (PAGE, "html"),
+    (os.path.join(ROOT, "README.md"), "md"),
+)
+
+
+def read(path):
+    with open(path) as f:
         return f.read()
 
 
@@ -140,21 +156,31 @@ def splice(html, block):
 
 def main():
     check = "--check" in sys.argv[1:]
-    block = wrap(render_splash())
-    html = read_page()
-    if BEGIN not in html or END not in html:
-        raise SystemExit("gen-showcase: markers not found in docs/index.html")
-    current = html[html.index(BEGIN):html.index(END) + len(END)]
-    if current == block:
-        print("gen-showcase: showcase is up to date")
-        return 0
-    if check:
-        sys.stderr.write("gen-showcase: docs/index.html showcase is STALE.\n"
-                         "Re-run: python3 tools/gen-showcase.py\n")
+    art = render_splash()
+    stale = []
+    for path, style in TARGETS:
+        block = wrap(art, style)
+        doc = read(path)
+        if BEGIN not in doc or END not in doc:
+            raise SystemExit("gen-showcase: markers not found in %s" % path)
+        current = doc[doc.index(BEGIN):doc.index(END) + len(END)]
+        if current == block:
+            continue
+        stale.append(path)
+        if not check:
+            with open(path, "w") as f:
+                f.write(splice(doc, block))
+    if stale and check:
+        sys.stderr.write(
+            "gen-showcase: showcase is STALE in: %s\n"
+            "Re-run: python3 tools/gen-showcase.py\n" % ", ".join(
+                os.path.relpath(p, ROOT) for p in stale))
         return 1
-    with open(PAGE, "w") as f:
-        f.write(splice(html, block))
-    print("gen-showcase: updated showcase in docs/index.html")
+    if stale:
+        print("gen-showcase: updated showcase in %s"
+              % ", ".join(os.path.relpath(p, ROOT) for p in stale))
+    else:
+        print("gen-showcase: showcase is up to date")
     return 0
 
 

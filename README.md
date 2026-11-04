@@ -1,62 +1,198 @@
-# NIRI SPACES
+# niri-spaces
 
-Niri Spaces is a layout configuration manager for the Niri Wayland compositor. It allows defining workspace layouts programmatically, templating repetitive workspace environments (e.g. monorepos), and displaying rich ASCII art splashes when terminals open.
+Declarative workspace layouts for [niri](https://github.com/YaLTeR/niri).
 
-## Features
+One plain-text file says which apps open on which workspace. `niri-spaces load`
+reads it, launches each app, waits for its window, moves it onto the right
+workspace and sizes the column — then steps aside. No daemon, nothing running in
+the background, and every move it makes is a `niri msg` call you could type
+yourself.
 
-- **Declarative layouts**: Load Niri workspace environments from clean config files.
-- **Portable by default**: The shipped spaces launch `$TERMINAL` + `$BROWSER` rather than hard-coded apps, so the same config works on any machine.
-- **Templating support**: Load monorepos dynamically by passing parameters (e.g., loading `myrepo-mono` with arguments `1` through `4`).
-- **Rich ASCII Splashes**: Includes `space-splash`, which displays a gorgeous ASCII art box with directory names, Git branch, last commit info, and status.
-- **Easy shortcuts**: Automatically binds `Mod+Ctrl+Shift+S` to reload/refresh all workspaces.
-
-## Directory Structure
-
-Configurations are placed in `~/.config/niri-spaces/`:
-
-- `autostart`: File specifying which layouts/workspaces to load sequentially on session start.
-- `spaces/`: Regular layout definition files.
-- `templates/`: Layout template files containing placeholders (`$1`, `$2`, etc.).
-
-## Default spaces
-
-Out of the box there are two workspaces, each split 50/50:
-
-- `spaces/main.space` — workspace 1: **zenith** (system monitor) in the terminal, browser on the right
-- `spaces/web.space` — workspace 2: plain terminal, browser on the right
-
-Neither names a specific application. At load time `niri-spaces` resolves:
-
-| Variable | If unset, first installed of |
-| --- | --- |
-| `TERMINAL` | `ghostty`, `foot`, `alacritty`, `kitty` |
-| `BROWSER` | `brave-origin`, `brave`, `firefox`, `google-chrome`, `chromium` |
-
-Anything you export wins, so `BROWSER=firefox niri-spaces load main` does what you'd expect. The matching `app_id` the window reports (`TERMINAL_APPID` / `BROWSER_APPID`) is derived automatically — window matching is a prefix match, so `brave-origin` and `brave-browser-nightly` both resolve to `brave`.
-
-The terminal candidates are limited to emulators that accept `--title=NAME -e COMMAND`, because `main.space` uses exactly that form to run zenith. `wezterm` (`start --`) and `xterm` (`-title`) are therefore not autodetected — `app_id_for` still maps wezterm if you export `TERMINAL=wezterm` deliberately, but the zenith line is then your problem.
-
-`spaces/default.space` is a plain single-workspace terminal + browser fallback with no zenith.
-
-### Layout file format
-
+<!-- BEGIN GENERATED SHOWCASE (tools/gen-showcase.py) -->
+```text
+┌────────────────────────────────────────────────────┐
+│                 ▐   ▐ ▐▀▀▀  ▐▀▀▄                   │
+│                 ▐   ▐ ▐▀▀   ▐▄▄▀                   │
+│                 ▐ █ ▐ ▐     ▐   █                  │
+│                  ▀ ▀  ▐▄▄▄  ▐▄▄▀                   │
+├────────────────────────────────────────────────────┤
+│ Workspace: web                                     │
+│ Path:      ~/dev/projects/web                      │
+│ Branch:    main                                    │
+│ Commit:    declarative layouts (2 hours ago)       │
+│ Status:    0 modified files                        │
+└────────────────────────────────────────────────────┘
 ```
-@workspace <name-or-index>
-<app_id> | <launch command> [| <env vars> [| <capture var>]]
-@action <shell command>          # may use captured window-id vars
+<!-- END GENERATED SHOWCASE -->
+
+That box is `space-splash` — the real program's output for a `web` workspace,
+spliced in by `tools/gen-showcase.py` so it cannot drift from what the code
+prints. It shows the folder, its git branch and its latest commit.
+
+## Install
+
+One command:
+
+```sh
+curl -fsSL https://lariocpt.github.io/niri-spaces/install.sh | sh
 ```
 
-Both the `app_id` and command fields expand shell variables. Fields are split on `|`, so **a launch command must not contain a pipe character** — set `$TERMINAL`/`$BROWSER` instead of writing an inline `||` fallback.
+It takes the repository's **latest** release. To install a specific one instead:
 
-## Command Line Interface
+```sh
+curl -fsSL https://lariocpt.github.io/niri-spaces/install.sh | sh -s -- --tag=v0.1.0
+```
 
-```bash
-# Load a workspace layout or template
-niri-spaces load <name> [args...]
+To see exactly what it would do, and do nothing:
 
-# Run the autostart layout list
+```sh
+curl -fsSL https://lariocpt.github.io/niri-spaces/install.sh | sh -s -- --dry-run
+```
+
+The archive is fetched and checked against its SHA-256 **before** anything is
+installed — it refuses to run an artifact it cannot verify. Then it puts
+`niri-spaces` and `space-splash` in `~/.local/bin` and copies the example spaces
+and an `autostart` file into `~/.config/niri-spaces/`. Config files are copied
+only where they don't already exist, so a file you edited is kept.
+
+**It does not edit your niri config.** It prints the keybind line to add and
+leaves the decision to you.
+
+`--prefix=DIR` moves the bins, `-h` shows all the options, and
+`NIRI_SPACES_REPO` points it at a fork.
+
+## Then wire it up in niri
+
+Two lines, in `~/.config/niri/config.kdl` (or `~/.config/niri/cfg/keybinds.kdl`
+if your config uses the `cfg/` split). These are the lines the installer prints
+for you — it prints them rather than writing them, because your config is yours.
+
+Have niri's autostart run:
+
+```
 niri-spaces start
-
-# Display workspace splash (usually run on terminal start)
-space-splash [path]
 ```
+
+and bind the picker to a key:
+
+```kdl
+Mod+Ctrl+Shift+S hotkey-overlay-title="Niri Spaces: Menu" { spawn "niri-spaces" "menu"; }
+```
+
+Reload niri and load your first layout:
+
+```sh
+niri-spaces load default
+```
+
+`menu` opens a picker — `fuzzel` when it's installed and you're on a Wayland
+session, otherwise a plain terminal `select` prompt.
+
+## Commands
+
+```
+niri-spaces load <name> [args...]   load spaces/<name>.space (or templates/<name>.space with $1..$9 substituted)
+niri-spaces start                   run every `load ...` line in ~/.config/niri-spaces/autostart
+niri-spaces menu                    pick a space interactively (fuzzel if available, else terminal)
+niri-spaces list                    list available spaces and templates
+```
+
+Four subcommands, and that is the whole surface. `start` runs each `load` line in
+`autostart` in order and finishes by focusing workspace 1.
+
+## The `.space` format
+
+A file is read top to bottom. A `@workspace` line sets the current workspace, and
+every app line after it lands there:
+
+| Line | Meaning |
+|---|---|
+| `@workspace <name-or-index>` | Following app lines target this workspace — a name or a number. |
+| `app_id \| command \| env \| capture` | Launch `command`, then find the window whose app id matches `app_id` and move it to the current workspace. `env` is exported for the launch; `capture` names a variable that receives the window id. Both are optional. |
+| `@action <shell>` | Run a shell command, e.g. to focus a captured window and size its column. |
+| `# …` | Comment. Blank lines are ignored. |
+
+Fields are split on `|`, so a launch command can't contain a literal pipe — no
+inline `||` fallbacks. Use `$TERMINAL` / `$BROWSER` instead.
+
+`spaces/default.space`, the fallback the installer ships, verbatim except the
+comments:
+
+```
+@workspace default
+$TERMINAL_APPID | $TERMINAL | | terminal_id
+$BROWSER_APPID  | $BROWSER  | | browser_id
+@action [ -n "${terminal_id:-}" ] && niri msg action focus-window --id "$terminal_id" && niri msg action set-column-width "50%"
+@action [ -n "${browser_id:-}" ] && niri msg action focus-window --id "$browser_id" && niri msg action set-column-width "50%"
+```
+
+Run it with `niri-spaces load default`. The shipped `autostart` loads `main` and
+`web` instead: `web` is the terminal-and-browser pair on workspace 2, and `main`
+is workspace 1 with a `zenith` system monitor in the left column — so `main`
+needs `zenith` installed to be worth loading.
+
+### Templates
+
+`templates/<name>.space` may use `$1` … `$9`, substituted from `load`'s
+arguments, so one file can describe a family of workspaces:
+
+```sh
+niri-spaces load service 3 api
+```
+
+### One file, many machines
+
+Spaces name `$TERMINAL` / `$BROWSER` rather than a specific app. At load time the
+first installed candidate wins — `ghostty`, `foot`, `alacritty`, `kitty` for the
+terminal, and `brave-origin`, `brave`, `firefox`, `google-chrome`, `chromium` for
+the browser — and the matching app id is derived for you (`$TERMINAL_APPID`,
+`$BROWSER_APPID`). Window matching is a prefix match, so `brave` also covers
+`brave-browser-nightly`. Export the variables yourself and your choice wins.
+
+## `space-splash`
+
+A Python 3 script that prints the box at the top of this file: directory, git
+branch, last commit, working-tree status. Point your terminal's start hook at it
+and each terminal tells you where it is.
+
+## Requirements
+
+- **niri**, running. niri-spaces drives the compositor only through `niri msg`,
+  so it needs a live niri session on Wayland. It is a niri tool — it does not
+  manage X11 or other compositors.
+- **bash** and **jq**. `jq` is not optional: the launcher diffs
+  `niri msg --json windows` before and after each spawn to learn the new window's
+  id, and without `jq` that diff silently yields nothing — every app then waits
+  out the 10-second "no window appeared" timeout and it looks like a slow
+  compositor instead of a missing dependency.
+- **Python 3** for `space-splash`. Standard library only, no pip installs.
+
+**What it is not:** it is not a session manager. It launches the apps a space
+names and puts them where the file says. It does not restore windows you closed.
+
+## Development
+
+```sh
+bats tests/                              # the test suite
+python3 tools/gen-showcase.py            # re-splice the real splash into README + page
+python3 tools/check-site.py              # the docs honesty gate CI runs
+shellcheck -s sh docs/install.sh         # installer, in its real shebang's dialect
+```
+
+Run the installer against a local build without touching your system:
+
+```sh
+docs/install.sh --tag=v0.1.0 --dry-run
+```
+
+The test suite is [bats-core](https://github.com/bats-core/bats-core).
+`tests/13_shells.bats` runs the installer end to end under bash, dash and busybox
+ash, because `#!/bin/sh` is only as strict as whatever it happens to run under.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
