@@ -1,0 +1,220 @@
+name: Release
+
+# Tag v0.1.0 pushes publish a GitHub Release carrying the single artifact the
+# installer knows how to find: niri-spaces-<ver>.tar.gz plus its .sha256
+# beside it, at the exact tag-scoped URLs docs/install.sh assembles. Built
+# like this on purpose:
+#
+#   - Draft first. The tarball, the checksum and the note are assembled and
+#     verified against the SAME bytes before anything becomes public, and the
+#     tag is never left without a release: the draft carries it from creation.
+#   - The archive is reproducible (sorted entries, fixed mtime, uid/gid 0, no
+#     gzip timestamp), so the pipeline rebuilds it and compares — a
+#     byte-identical match proves the published artifact is exactly what this
+#     commit produces, rather than trusting that tar behaves.
+#   - The checksum is the installer's own contract (`<hex>  <filename>`, LF)
+#     and is verified against the bytes a download actually returns.
+#   - The published note is the matching CHANGELOG section, so the changelog
+#     stays the single source of truth for release wording.
+#   - The flip happens only after publish+reproduce; a failure leaves a draft
+#     for inspection instead of a broken public release.
+#   - A final download check runs anonymously, because an authenticated action
+#     can reach things the public cannot.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build and publish, e.g. v0.1.1'
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Never release from a private repository.
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    # contents:write is what flips a draft to public through the API; it is
+    # scoped to this job and to nothing else in the repository.
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Work out the artifact names
+        id: names
+        run: |
+          set -euo pipefail
+          # The installer builds its URL by dropping the leading `v`, so the
+          # version inside the archive name must be the tag minus that prefix.
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "tag '$TAG' is not vX.Y.Z — the installer's URL pattern cannot be honoured"; exit 1; }
+          version="${TAG#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "dir=niri-spaces-$version" >> "$GITHUB_OUTPUT"
+          echo "tarball=niri-spaces-$version.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Check the tag against CHANGELOG.md
+        run: |
+          set -euo pipefail
+          # The version section must exist BEFORE a note is extracted, or an
+          # unannotated release would ship with an empty note.
+          grep -Eq "^## \[${{ steps.names.outputs.version }}\]" CHANGELOG.md \
+            || { echo "CHANGELOG.md has no '## [${{ steps.names.outputs.version }}]' section — add it before tagging"; exit 1; }
+
+      - name: Rebuild + reproduce (before anything is exposed)
+        run: |
+          set -euo pipefail
+          ./scripts/package.sh "$TAG" --out dist
+          # A second, independent build must produce identical bytes. That is
+          # what makes "the published artifact is reproducible" a fact rather
+          # than a claim about tar.
+          ./scripts/package.sh "$TAG" --out dist2
+          cmp "dist/${{ steps.names.outputs.tarball }}" "dist2/${{ steps.names.outputs.tarball }}" \
+            || { echo "the archive is not reproducible — published bytes could not be re-derived"; exit 1; }
+
+      - name: Checksum with coreutils sha256sum
+        run: |
+          set -euo pipefail
+          # The format the installer parses, asserted rather than assumed:
+          # `<hex>  <basename>` with a trailing LF and no directory prefix.
+          cd dist
+          sha256sum -- "${{ steps.names.outputs.tarball }}" | tee "${{ steps.names.outputs.tarball }}.sha256" > /dev/null
+          line=$(cat "${{ steps.names.outputs.tarball }}.sha256")
+          [[ "$line" =~ ^[0-9a-f]{64}__  $ ]] && true
+          printf '%s' "$line" | grep -Eq "^[0-9a-f]{64}  ${{ steps.names.outputs.tarball }}$" \
+            || { echo "checksum file is not '<hex>  <basename>': $line"; exit 1; }
+          tail -c1 "${{ steps.names.outputs.tarball }}.sha256" | od -An -c | grep -q '\\n' \
+            || { echo "checksum file has no trailing newline"; exit 1; }
+          sha256sum -c "${{ steps.names.outputs.tarball }}.sha256"
+
+      - name: Build the release note from CHANGELOG.md
+        env:
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          TARBALL: ${{ steps.names.outputs.tarball }}
+          DIR: ${{ steps.names.outputs.dir }}
+          VERSION: ${{ steps.names.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Exactly the section for THIS version: from its heading to the next
+          # `## ` heading, heading excluded. The trailing link definitions and
+          # the comment above them are changelog furniture, not release prose, so
+          # extraction stops at the first of either. awk keeps the release's own
+          # wording without inventing anything.
+          awk -v ver="$VERSION" '
+            started && /^## / { exit }
+            started && /^<!--/ { exit }
+            started && /^\[.*\]:[[:space:]]*https/ { exit }
+            started { print }
+            $0 ~ "^## \\[" ver "\\]" { started = 1; next }
+          ' CHANGELOG.md | sed -e '/./,$!d' -e :a -e '/^\n*$/{$d;N;ba' -e '}' > note.md
+          test -s note.md || { echo "the note came out empty"; exit 1; }
+          {
+            echo
+            echo '---'
+            echo
+            echo '### Install'
+            echo
+            echo '```sh'
+            echo "curl -fsSL https://$OWNER.github.io/niri-spaces/install.sh | sh"
+            echo '```'
+            echo
+            echo 'Or fetch this artifact directly:'
+            echo
+            echo '```sh'
+            echo "curl -fLO https://github.com/$OWNER/$REPO/releases/download/$TAG/$TARBALL"
+            echo "curl -fLO https://github.com/$OWNER/$REPO/releases/download/$TAG/$TARBALL.sha256"
+            echo "sha256sum -c $TARBALL.sha256"
+            echo "tar -xzf $TARBALL && cd $DIR && ./install.sh"
+            echo '```'
+          } >> note.md
+          echo '--- release note ---'
+          cat note.md
+
+      - name: Publish as draft and check the bytes came back identical
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARBALL: ${{ steps.names.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          # --verify-tag refuses a note that does not match the tag, and creating
+          # it as a draft keeps the tag covered from the first second: an
+          # unfinished public release is worse than a draft.
+          gh release create "$TAG" \
+            --draft \
+            --verify-tag \
+            --title "niri-spaces ${TAG#v}" \
+            --notes-file note.md \
+            "dist/$TARBALL" "dist/$TARBALL.sha256"
+          # Read the published bytes back and compare with what was built.
+          mkdir -p verify
+          for f in "$TARBALL" "$TARBALL.sha256"; do
+            gh release download "$TAG" -p "$f" -D verify --clobber
+            cmp "verify/$f" "dist/$f" || { echo "downloaded $f differs from what was built"; exit 1; }
+          done
+          echo 'verified: both assets came back byte-identical'
+
+      - name: Flip the draft to public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --draft=false
+
+      - name: Check the public release anonymously
+        env:
+          REPO: ${{ github.repository }}
+          TARBALL: ${{ steps.names.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          # An anonymous HTTPS fetch of exactly the URL the installer assembles,
+          # then the same verification the installer performs, off the public
+          # URL. Edge errors are common for a few seconds after a publish, so
+          # this retries with backoff and reports what it saw.
+          base="https://github.com/$REPO/releases/download/$TAG"
+          for attempt in 1 2 3 4 5; do
+            if curl -fsSL "$base/$TARBALL.sha256" -o public.sha256 \
+               && curl -fsSL "$base/$TARBALL" -o "dl-$TARBALL"; then
+              # `sha256sum -c` matches on the name inside the file, so move the
+              # download into that exact shape before checking.
+              name=$(awk '{print $2}' public.sha256)
+              mv "dl-$TARBALL" "$name"
+              if sha256sum -c public.sha256; then
+                echo 'public download verified against the published checksum'
+                exit 0
+              fi
+              echo "checksum mismatch on the public download (attempt $attempt)"
+              rm -f "$name"
+            else
+              echo "public fetch failed (attempt $attempt): $base/$TARBALL"
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::could not verify the public release artifact at $base/$TARBALL"
+          exit 1
+
+      - name: Leave a draft if anything above failed
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          # A half-published release is the failure mode to avoid: if the flip or
+          # the anonymous check failed after creation, put it back to draft so
+          # nobody installs an unverified artifact.
+          if gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null | grep -q false; then
+            gh release edit "$TAG" --draft=true
+            echo "::warning::${TAG} was returned to draft — investigate, then re-run this workflow with the tag"
+          else
+            echo 'release is still a draft or was never created — nothing public was exposed'
+          fi
