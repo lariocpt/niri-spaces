@@ -92,7 +92,6 @@ jobs:
           cd dist
           sha256sum -- "${{ steps.names.outputs.tarball }}" | tee "${{ steps.names.outputs.tarball }}.sha256" > /dev/null
           line=$(cat "${{ steps.names.outputs.tarball }}.sha256")
-          [[ "$line" =~ ^[0-9a-f]{64}__  $ ]] && true
           printf '%s' "$line" | grep -Eq "^[0-9a-f]{64}  ${{ steps.names.outputs.tarball }}$" \
             || { echo "checksum file is not '<hex>  <basename>': $line"; exit 1; }
           tail -c1 "${{ steps.names.outputs.tarball }}.sha256" | od -An -c | grep -q '\\n' \
@@ -137,7 +136,10 @@ jobs:
             echo "curl -fLO https://github.com/$OWNER/$REPO/releases/download/$TAG/$TARBALL"
             echo "curl -fLO https://github.com/$OWNER/$REPO/releases/download/$TAG/$TARBALL.sha256"
             echo "sha256sum -c $TARBALL.sha256"
-            echo "tar -xzf $TARBALL && cd $DIR && ./install.sh"
+            echo "tar -xzf $TARBALL && cd $DIR"
+            echo "mkdir -p ~/.local/bin ~/.config/niri-spaces"
+            echo "install -m755 niri-spaces space-splash ~/.local/bin/"
+            echo "cp -rn autostart spaces ~/.config/niri-spaces/"
             echo '```'
           } >> note.md
           echo '--- release note ---'

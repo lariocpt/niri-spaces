@@ -1,0 +1,145 @@
+name: pages
+
+# Publishes docs/ as GitHub Pages on https://<owner>.github.io/niri-spaces/.
+#
+# The pages deployer uploads whatever is in the folder and never renders it, so
+# a broken or leaking page would go live silently. The site gate runs BEFORE the
+# upload instead: the docs page is checked for any external request it would make
+# in a visitor's browser, its CLI block is compared against what the script in
+# this tree actually prints, and the terminal hero is verified to match what the
+# splash in this tree produces right now.
+#
+# Gating before upload is not a guarantee about the served bytes — only the
+# deployed route can be asked that — so the last job checks what GitHub actually
+# serves after publishing, in the same run.
+#
+# The whole workflow is guarded on the repository being public: a private repo's
+# Pages publish can strand a stale public copy of an earlier build.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'niri-spaces'
+      - 'space-splash'
+      - 'tools/gen-showcase.py'
+      - 'tools/check-site.py'
+      - 'scripts/package.sh'
+      - 'README.md'
+      - '.github/workflows/pages.yml'
+  # Manual runs are how a first deploy or a Pages-settings change gets published:
+  # path filters never fire for a change to the Pages configuration itself.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the check tools
+        run: |
+          set -euo pipefail
+          # The gate runs the real CLI, so shellcheck is here to keep the promise
+          # that the thing being printed is valid shell as well as honest.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+
+      - name: The installer is valid shell
+        run: |
+          set -euo pipefail
+          # The page tells visitors to pipe this file into `sh`; it is also
+          # installed as /install.sh inside the release archive.
+          sh -n docs/install.sh
+          shellcheck -s sh docs/install.sh
+
+      - name: The terminal hero matches the splash in this tree
+        run: python3 tools/gen-showcase.py --check
+
+      - name: Check the page before publishing it
+        run: python3 tools/check-site.py
+
+      - name: Build the release artifact the page tells people to download
+        run: |
+          set -euo pipefail
+          # The page advertises `curl .../install.sh | sh`, which resolves a tag
+          # and downloads a tarball. Building it here proves the packaging path
+          # the installer depends on still works on main, not only on a tag.
+          # The tag is a throwaway but must be a real one: package.sh refuses
+          # anything that is not vX.Y.Z, and a smoke test that cannot run is
+          # worse than none because it reads like coverage.
+          ./scripts/package.sh v0.0.0
+          tar -tzf dist/niri-spaces-0.0.0.tar.gz | grep -qx 'niri-spaces-0.0.0/install.sh'
+          tar -tzf dist/niri-spaces-0.0.0.tar.gz | grep -qx 'niri-spaces-0.0.0/autostart'
+          ( cd dist && sha256sum -c niri-spaces-0.0.0.tar.gz.sha256 )
+
+      - uses: actions/configure-pages@v5
+        with:
+          project-type: 'not-applied'
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: gate
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  served:
+    # What the public route actually delivers, asked after the publish. An
+    # offline file check proves what we UPLOADED; this proves what a visitor
+    # RECEIVES — that the artifact survived the deploy and was not replaced by a
+    # stale build or an HTML error page.
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch the live page and installer
+        run: |
+          set -euo pipefail
+          base="https://${{ github.repository_owner }}.github.io/niri-spaces"
+          # Transient 404s are normal while a Pages deploy propagates, so this
+          # retries with backoff before declaring the route broken.
+          fetch() {
+            local url="$1" dest="$2" tries=0
+            until curl -fsSL "$url" -o "$dest" 2>/dev/null; do
+              tries=$((tries + 1))
+              [ "$tries" -ge 5 ] && { echo "could not fetch $url" >&2; return 1; }
+              sleep $((tries * 5))
+            done
+          }
+          fetch "$base/" live.html
+          fetch "$base/install.sh" live-install.sh
+          # A served HTML error page would still be bytes; insist on ours. The
+          # pattern is the page's real <title>, hyphen and all — an assertion
+          # that cannot match a good page fails every deploy instead of bad ones.
+          grep -qi '<title>niri-spaces' live.html || { echo "the served page is not our landing page:"; head -c 400 live.html; exit 1; }
+          # The install line people copy has to be the URL that resolves, and
+          # what that URL delivers has to be a shell script.
+          grep -qF "$base/install.sh | sh" live.html \
+            || { echo "the page does not advertise the URL we just fetched"; exit 1; }
+          head -n1 live-install.sh | grep -qi '^#!.*sh' \
+            || { echo "the served installer has no shebang"; exit 1; }
+          sh -n live-install.sh
+          # Nothing private may ride along on either public artifact.
+          if grep -Ein 'apps\.in\.drlario\.org|/srv/apps|/opt/publish|drlario|timbuk' live.html live-install.sh; then
+            echo 'a private hostname or path leaked into a public artifact' >&2
+            exit 1
+          fi
+          echo 'served page and installer verified'

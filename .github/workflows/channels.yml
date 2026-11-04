@@ -1,0 +1,47 @@
+name: channels
+
+# Is every install method the docs page advertises actually serving the release
+# it claims to?
+#
+# Separate from release.yml on purpose: the tag, the release assets and the Pages
+# route are three different systems that must agree, and any of them can drift
+# after a publish (a release deleted by hand, Pages left on an old build, the
+# installer still pointing at a repository that was renamed). Folding this into
+# the release run would only ever check the moment of publication; this is the
+# standing question, asked weekly and on demand.
+#
+# It exists because an offline check can only prove the files in this tree agree
+# with each other. Whether the public URLs still resolve, still carry the pinned
+# tag, and still hand out an artifact whose checksum matches is a question you
+# have to go and ask.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version every channel should serve (blank = the latest release)'
+        required: false
+  schedule:
+    # Weekly. This goes red only when a channel is genuinely missing or behind,
+    # never for having nothing to do — so it stays a signal rather than noise.
+    - cron: '17 7 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: channels
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Every advertised channel serves the current release
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          tools/check-channels.sh ${VERSION:+"$VERSION"}
