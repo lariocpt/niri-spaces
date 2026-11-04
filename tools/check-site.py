@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Fail if docs/index.html breaks a promise the repo can't keep.
+"""Fail if a public artifact breaks a promise the repo can't keep.
 
-The docs page is the front door every `curl | sh` reader walks through, so its
-claims are gated like code. This checks, offline, that:
+The docs page and the README are the front door every `curl | sh` reader walks
+through, so their claims are gated like code. This checks, offline, that:
 
   * the page fetches nothing at load — no script/style/img/iframe/@import to a
     remote host, so the page renders identically with no network and leaks no
@@ -10,9 +10,11 @@ claims are gated like code. This checks, offline, that:
   * the "Install" command points at the Pages route this repo actually deploys;
   * the "Commands" block is `niri-spaces --help` verbatim, so the page can't
     advertise a subcommand the CLI dropped or leak one it never had;
-  * every subcommand the page shows really exists in the CLI;
+  * every subcommand either file advertises really exists in the CLI;
   * the hero showcase is exactly what tools/gen-showcase.py regenerates;
-  * no internal hostname or path from the author's machines leaked into the page.
+  * neither file claims the installer binds a keybind — it prints one;
+  * no internal hostname or path from the author's machines, and no unreplaced
+    placeholder, survived into a public file.
 
 Exits non-zero with a readable list of every violation.
 """
@@ -25,6 +27,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PAGE = os.path.join(ROOT, "docs", "index.html")
+README = os.path.join(ROOT, "README.md")
 CLI = os.path.join(ROOT, "niri-spaces")
 
 # Hosts the page may LINK to (clicking is fine; auto-loading is not).
@@ -41,6 +44,29 @@ FORBIDDEN = (
     "drlario",
     "timbuk",
 )
+
+# Placeholders that were never meant to be published. `myrepo-mono` was a real
+# one: the README documented templating with a private example repository that
+# does not exist in this release.
+PLACEHOLDERS = (
+    "myrepo-mono",
+    "TODO",
+    "FIXME",
+    "mycompany",
+    "example.com",
+)
+
+# Things the installer does NOT do, which an earlier README claimed it did. It
+# prints the keybind line and refuses to edit a niri config; wording that says it
+# binds, sets or writes the keybind is a false claim about shipped behaviour.
+KEYBIND_CLAIMS = (
+    "automatically binds",
+    "auto-binds",
+    "binds Mod+Ctrl+Shift+S for you",
+    "sets the keybind",
+    "writes the keybind",
+)
+KEYBIND_MENTIONS = ("Mod+Ctrl+Shift+S", "keybind")
 
 
 def _attr_urls(raw):
@@ -60,6 +86,78 @@ def _attr_urls(raw):
 
 def _is_external(url):
     return bool(re.match(r'(?:https?:)?//', url)) or url.lower().startswith("data:text/html")
+
+
+def check_public_text(name, raw, helptext):
+    """Claims shared by every public text artifact: README.md and docs/index.html.
+
+    These files are the only thing most readers ever see, so a sentence here that
+    the code does not support is a bug with the same severity as a broken command.
+    """
+    errors = []
+    for s in FORBIDDEN:
+        if s in raw:
+            errors.append(f"{name}: forbidden internal string present: {s}")
+    for s in PLACEHOLDERS:
+        if s in raw:
+            errors.append(f"{name}: unreplaced placeholder published: {s}")
+
+    # The installer prints the keybind line and edits nothing (tests/10_install.bats
+    # asserts both). Any phrasing that says otherwise describes behaviour that does
+    # not exist, so check any keybind mention for a binding claim.
+    low = raw.lower()
+    for mention in KEYBIND_MENTIONS:
+        if mention.lower() in low:
+            for claim in KEYBIND_CLAIMS:
+                if claim in low:
+                    errors.append(
+                        f"{name}: claims the installer '{claim}', but it only prints "
+                        "the line and edits no niri config")
+            break
+
+    # A README code fence may advertise a subcommand; it must exist. Checked
+    # against --help rather than against prose, so a renamed verb cannot survive.
+    real = set(re.findall(r'^\s+niri-spaces\s+([\w-]+)', helptext, re.M))
+    for verb in set(re.findall(r'^\s*niri-spaces\s+([a-z][\w-]*)', raw, re.M)):
+        if verb in ("--help",):
+            continue
+        if verb not in real:
+            errors.append(f"{name}: advertises 'niri-spaces {verb}' which the CLI does not accept")
+
+    # The advertised install command must be the route that answers.
+    if INSTALL_URL not in raw:
+        errors.append(f"{name}: does not reference the Pages install route {INSTALL_URL}")
+    return errors
+
+
+def check_local_refs(name, raw, path):
+    """Every locally-referenced file must exist in the repo.
+
+    This gate was written after a README shipped `<img src="docs/showcase/...">`
+    for PNGs that nothing in this repository generates: the showcase was a
+    picture of a product that does not exist, and nothing failed. A reference to
+    a file that isn't there is the same class of defect as a command that lies
+    about what it does, so it fails the build the same way.
+    """
+    base = os.path.dirname(path) or "."
+    refs = set()
+    for m in re.finditer(r'<img\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']', raw, re.I):
+        refs.add(m.group(1))
+    for m in re.finditer(r'!\[[^\]]*\]\(\s*([^)\s]+)', raw):        # markdown image
+        refs.add(m.group(1))
+    for m in re.finditer(r'(?<!!)\]\(\s*([^)\s]+)', raw):           # markdown link
+        refs.add(m.group(1))
+
+    errors = []
+    for ref in sorted(refs):
+        if _is_external(ref) or ref.startswith(("#", "/", "mailto:")):
+            continue
+        target = ref.split("#", 1)[0].split("?", 1)[0]
+        if not target:
+            continue
+        if not os.path.exists(os.path.join(base, target)):
+            errors.append(f"{name}: references {ref}, which does not exist in this repo")
+    return errors
 
 
 def check(raw):
@@ -117,15 +215,27 @@ def check(raw):
 
 
 def main():
-    with open(PAGE) as f:
-        raw = f.read()
-    errs = check(raw)
+    helptext = subprocess.run(
+        [CLI, "--help"], capture_output=True, text=True,
+    ).stdout.strip()
+
+    errs = []
+    for name, path in (("README.md", README), ("docs/index.html", PAGE)):
+        if not os.path.exists(path):
+            errs.append(f"{name} is missing")
+            continue
+        with open(path) as f:
+            raw = f.read()
+        if name == "docs/index.html":
+            errs += check(raw)
+        errs += check_public_text(name, raw, helptext)
+        errs += check_local_refs(name, raw, path)
     if errs:
         print("check-site: FAILED")
         for e in errs:
             print("  - " + e)
         return 1
-    print("check-site: docs/index.html is self-contained, on-route, and matches the CLI")
+    print("check-site: README.md and docs/index.html are self-contained, on-route, and match the CLI")
     return 0
 
 
