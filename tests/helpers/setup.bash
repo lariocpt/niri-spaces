@@ -17,7 +17,7 @@ NS_SPLASH="$NS_REPO_ROOT/space-splash"
 # itself; shellcheck reads this file alone and would call it dead. Same for the
 # NS_TEST_* globals ns_build_release sets. Silence the false positive at source.
 # shellcheck disable=SC2034
-NS_INSTALL="$NS_REPO_ROOT/install.sh"
+NS_INSTALL="$NS_REPO_ROOT/docs/install.sh"
 NS_HELPERS="${BATS_TEST_DIRNAME}/helpers"
 NS_STUBS="$NS_HELPERS/stubs"
 
