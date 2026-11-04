@@ -79,8 +79,19 @@ jobs:
           # anything that is not vX.Y.Z, and a smoke test that cannot run is
           # worse than none because it reads like coverage.
           ./scripts/package.sh v0.0.0
-          tar -tzf dist/niri-spaces-0.0.0.tar.gz | grep -qx 'niri-spaces-0.0.0/install.sh'
-          tar -tzf dist/niri-spaces-0.0.0.tar.gz | grep -qx 'niri-spaces-0.0.0/autostart'
+          # The member list is read once and matched in the shell. `tar | grep -qx` is a
+          # trap under `set -o pipefail`: grep -q exits the instant it matches, tar's next
+          # write hits a closed pipe and dies with "tar: stdout: write error" (exit 2), and
+          # pipefail reports that as a failed check that actually passed. It is a race
+          # against the pipe buffer, so it reads green on a laptop and red on a runner —
+          # which is the worst property a gate that protects the installer can have.
+          members=$(tar -tzf dist/niri-spaces-0.0.0.tar.gz)
+          for member in niri-spaces-0.0.0/install.sh niri-spaces-0.0.0/autostart; do
+            case $'\n'"$members"$'\n' in
+              *$'\n'"$member"$'\n'*) ;;
+              *) echo "the artifact has no $member" >&2; exit 1 ;;
+            esac
+          done
           ( cd dist && sha256sum -c niri-spaces-0.0.0.tar.gz.sha256 )
 
       - uses: actions/configure-pages@v5
@@ -134,8 +145,14 @@ jobs:
           # what that URL delivers has to be a shell script.
           grep -qF "$base/install.sh | sh" live.html \
             || { echo "the page does not advertise the URL we just fetched"; exit 1; }
-          head -n1 live-install.sh | grep -qi '^#!.*sh' \
-            || { echo "the served installer has no shebang"; exit 1; }
+          # Read the first line rather than piping head into grep -q: grep -q closing
+          # the pipe early is the race that failed the artifact check for a passing
+          # artifact, and head is no exception to it.
+          shebang=$(head -n1 live-install.sh)
+          case "$shebang" in
+            '#!'*sh*) ;;
+            *) echo "the served installer has no shebang (first line: $shebang)"; exit 1 ;;
+          esac
           sh -n live-install.sh
           # Nothing private may ride along on either public artifact.
           if grep -Ein 'apps\.in\.drlario\.org|/srv/apps|/opt/publish|drlario|timbuk' live.html live-install.sh; then

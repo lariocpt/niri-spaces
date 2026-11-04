@@ -25,11 +25,21 @@ setup() {
     [ -f "$tarball.sha256" ]
 
     # The contract docs/install.sh checks member-by-member. Asserted here too, so
-    # a failure names the missing member instead of just "install failed".
+    # a failure names the missing member instead of just "install failed". The list
+    # is captured once: `tar | grep -q` is a race (grep -q closes the pipe, tar dies
+    # with "stdout: write error"), which the pages workflow already learned the hard
+    # way under `set -o pipefail`.
+    members=$(tar -tzf "$tarball")
     for m in niri-spaces space-splash autostart LICENSE README.md install.sh; do
-        tar -tzf "$tarball" | grep -qx "niri-spaces-0.0.0/$m"
+        case $'\n'"$members"$'\n' in
+            *$'\n'"niri-spaces-0.0.0/$m"$'\n'*) ;;
+            *) echo "the artifact has no niri-spaces-0.0.0/$m" >&2; return 1 ;;
+        esac
     done
-    tar -tzf "$tarball" | grep -q '^niri-spaces-0.0.0/spaces/.*\.space$'
+    case $'\n'"$members"$'\n' in
+        *$'\n'"niri-spaces-0.0.0/spaces/"*".space"$'\n'*) ;;
+        *) echo "the artifact carries no .space file under spaces/" >&2; return 1 ;;
+    esac
 
     # Checksum file is the format the installer parses: "<hex>  <basename>" + LF,
     # with no directory prefix, because it is verified from the download dir.

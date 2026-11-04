@@ -92,10 +92,14 @@ jobs:
           cd dist
           sha256sum -- "${{ steps.names.outputs.tarball }}" | tee "${{ steps.names.outputs.tarball }}.sha256" > /dev/null
           line=$(cat "${{ steps.names.outputs.tarball }}.sha256")
-          printf '%s' "$line" | grep -Eq "^[0-9a-f]{64}  ${{ steps.names.outputs.tarball }}$" \
+          # Here-string, not `printf | grep -q`: same closed-pipe race, no producer to cut off.
+          grep -Eq "^[0-9a-f]{64}  ${{ steps.names.outputs.tarball }}$" <<<"$line" \
             || { echo "checksum file is not '<hex>  <basename>': $line"; exit 1; }
-          tail -c1 "${{ steps.names.outputs.tarball }}.sha256" | od -An -c | grep -q '\\n' \
-            || { echo "checksum file has no trailing newline"; exit 1; }
+          # `tail | od | grep -q` would be the same race that broke the pages gate
+          # (grep -q closes the pipe early); the byte is tiny, so read it directly.
+          last=$(tail -c1 "${{ steps.names.outputs.tarball }}.sha256" | od -An -c | tr -d '[:space:]')
+          [ "$last" = '\n' ] \
+            || { echo "checksum file has no trailing newline (last byte: '$last')"; exit 1; }
           sha256sum -c "${{ steps.names.outputs.tarball }}.sha256"
 
       - name: Build the release note from CHANGELOG.md
@@ -214,7 +218,10 @@ jobs:
           # A half-published release is the failure mode to avoid: if the flip or
           # the anonymous check failed after creation, put it back to draft so
           # nobody installs an unverified artifact.
-          if gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null | grep -q false; then
+          # Captured before matching: piping `gh` straight into `grep -q` is the same
+          # closed-pipe race, and this branch decides whether a release goes back to draft.
+          draft=$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null || echo unknown)
+          if [ "$draft" = "false" ]; then
             gh release edit "$TAG" --draft=true
             echo "::warning::${TAG} was returned to draft — investigate, then re-run this workflow with the tag"
           else

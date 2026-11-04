@@ -108,11 +108,14 @@ ns_fetch() {                                  # <url> <dest>
 
 ns_wget_https_only() {
     if [ -z "${NS_WGET_HTTPS:-}" ]; then
-        if wget --help 2>&1 | grep -q -- '--https-only'; then
-            NS_WGET_HTTPS=yes
-        else
-            NS_WGET_HTTPS=no
-        fi
+        # wget's help is captured, not piped into grep -q: grep exits on the first
+        # match, and a producer cut off mid-write is a failure that only shows up
+        # when the shell keeps pipe statuses (ash and bash both can).
+        ns_wget_help=$(wget --help 2>&1 || :)
+        case "$ns_wget_help" in
+            *--https-only*) NS_WGET_HTTPS=yes ;;
+            *)              NS_WGET_HTTPS=no ;;
+        esac
     fi
     [ "$NS_WGET_HTTPS" = yes ]
 }

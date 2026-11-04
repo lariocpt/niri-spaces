@@ -57,11 +57,13 @@ if [[ -z "$installer" ]]; then
   bad "$pages/install.sh did not answer — the advertised install command cannot work"
 else
   good "$pages/install.sh answers"
-  if head -n1 <<<"$installer" | grep -qi '^#!.*sh'; then
-    good "the served installer has a shell shebang"
-  else
-    bad "the served installer has no shebang"
-  fi
+  # First line pulled out with a expansion, not `head | grep -q`: grep -q closes the
+  # pipe the moment it matches, and the cut-off producer is a race, not a result.
+  installer_first=${installer%%$'\n'*}
+  case "$installer_first" in
+    '#!'*sh*) good "the served installer has a shell shebang" ;;
+    *)        bad "the served installer has no shebang (first line: $installer_first)" ;;
+  esac
   # A truncated deploy still returns a 200 and some bytes, so re-parse it.
   if printf '%s' "$installer" | sh -n 2>/dev/null; then
     good "the served installer parses as shell"
