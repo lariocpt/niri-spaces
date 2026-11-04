@@ -97,12 +97,11 @@ EOF
     [[ "$output" == *"invalid option"* ]]         # the misparsed "--b" env field
 }
 
-@test "layout: an unknown @directive is silently skipped, not an error" {
+@test "layout: an unknown @directive warns on stderr and continues" {
     install_stub_apps foot
-    # The code only special-cases @workspace and @action; anything else starting
-    # with @ falls through to the app-line splitter, has no `|`, so its command
-    # field is empty and the line is skipped (niri-spaces:151). No diagnostic is
-    # printed and the load still succeeds.
+    # @workspace and @action are the only recognised directives. Any other line
+    # that starts with @ now emits a warning naming the directive and its
+    # file:line, then is ignored so the rest of the file still runs.
     write_space ws <<'EOF'
 @workspace 1
 @frobnicate nonsense
@@ -110,9 +109,12 @@ foot | foot
 EOF
     run "$NS_CLI" load ws
     [ "$status" -eq 0 ]
+    # warning names the directive and points at line 2
+    [[ "$output" == *"warning: unknown directive '@frobnicate'"* ]]
+    [[ "$output" == *":2 (ignored)"* ]]
+    # and loading still proceeds past it
     app_ran foot
     [ "$(grep -c launching <<<"$output")" -eq 1 ]
-    [[ "$output" != *"frobnicate"* ]]
 }
 
 @test "layout: app_id and command fields both shell-expand" {

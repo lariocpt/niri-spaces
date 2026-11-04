@@ -24,9 +24,9 @@ setup() { ns_setup; }
 }
 
 @test "preflight: both niri and jq present passes" {
-    # sed is needed only because --help reads the header back off the script;
-    # the refusal tests never get that far (they exit inside the loop).
-    local d; d="$(build_min_path sh bash jq sed)"
+    # awk is needed only because --help extracts the header comment block off the
+    # script; the refusal tests never get that far (they exit inside the loop).
+    local d; d="$(build_min_path sh bash jq awk)"
     add_niri_to "$d"
     run env PATH="$d" "$NS_CLI" --help
     [ "$status" -eq 0 ]

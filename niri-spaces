@@ -6,6 +6,8 @@
 #   niri-spaces menu                    pick a space interactively (fuzzel if available, else terminal)
 #   niri-spaces list                    list available spaces and templates
 #
+# Space files live in ~/.config/niri-spaces/spaces/ and templates/.
+#
 # Layout file format (.space) — parsing ported from niri-wspaces-loader:
 #   @workspace <name-or-index>
 #   <app_id> | <launch command> [| <env vars> [| <capture var>]]
@@ -126,8 +128,10 @@ run_space_file() {
     local ws_file="$1"
     local current_ws=""
     local line app_id cmd env_vars var_name win_id action_cmd
+    local lineno=0
 
     while IFS= read -r line || [ -n "$line" ]; do
+        lineno=$((lineno + 1))
         line=$(trim "$line")
         [ -z "$line" ] && continue
         [[ "$line" =~ ^# ]] && continue
@@ -139,6 +143,9 @@ run_space_file() {
         elif [[ "$line" =~ ^@action[[:space:]]+(.*) ]]; then
             action_cmd="${BASH_REMATCH[1]}"
             eval "$action_cmd" || echo "warning: @action failed: $action_cmd" >&2
+            continue
+        elif [[ "$line" == @* ]]; then
+            echo "warning: unknown directive '${line%%[[:space:]]*}' at ${ws_file}:${lineno} (ignored)" >&2
             continue
         fi
 
@@ -251,6 +258,6 @@ case "${1:-}" in
     start) cmd_start ;;
     list)  cmd_list ;;
     menu)  cmd_menu ;;
-    -h|--help|"") sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+    -h|--help|"") awk 'NR==1{next} /^#/{sub(/^#[[:space:]]?/,"");print;next} {exit}' "$0" ;;
     *) echo "unknown subcommand: $1 (try: load, start, menu, list)" >&2; exit 1 ;;
 esac
