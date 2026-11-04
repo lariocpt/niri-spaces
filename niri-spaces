@@ -97,6 +97,9 @@ launch_on_workspace() {
     local cmd=("$@")
 
     # Prefix match so e.g. "brave" covers brave-browser and brave-browser-nightly.
+    # The $app inside is a jq variable handed to `jq --arg`, not a shell expansion,
+    # so the single quotes are deliberate — silence the shell-expansion lint.
+    # shellcheck disable=SC2016
     local jq_filter='.[] | select(.app_id != null) | select(.app_id | startswith($app)) | .id'
     local pre_ids
     pre_ids=$(niri msg --json windows | jq -r --arg app "$app_id" "$jq_filter")

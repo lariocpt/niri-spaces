@@ -1,0 +1,109 @@
+name: ci
+
+# Two paths to main get gated: a push to it, and a pull request aimed at it.
+# Nothing else triggers this on purpose — a workflow that also fired on every
+# throwaway branch would spend minutes CI has no reason to spend on a branch
+# nobody can release from.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # The newest push is the only one that matters. Nothing in here has a side
+  # effect to roll back, so letting a superseded run finish is just noise about a
+  # commit that is no longer the tip of the branch every release is cut from.
+  cancel-in-progress: true
+
+jobs:
+  # Gate 1: every shell line the project ships or runs parses as the shell it
+  # claims, and is clean under shellcheck. This is a bash CLI whose installer is
+  # executed by `curl | sh` on a stranger's machine — the class of bug worth a
+  # standing gate is the bash-ism that runs on the author's box and dies on the
+  # dash/ash host that actually did the curl.
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the linter
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
+      - name: The installer means its #!/bin/sh
+        run: |
+          set -euo pipefail
+          # install.sh is piped straight to a stranger's /bin/sh with no developer in
+          # the loop, so "it works in bash" proves nothing. Parse it under /bin/sh and
+          # lint it AS sh: on the runner /bin/sh is dash, and shellcheck -s sh flags the
+          # GNU-isms (arrays, [[ ]], local) that would parse in bash and die on the
+          # dash/ash/busybox host that actually ran the curl.
+          sh -n install.sh
+          shellcheck -s sh install.sh
+
+      - name: The CLI and the test harness are clean
+        run: |
+          set -euo pipefail
+          # -x follows the sourced helper files, so a bug in the harness is caught at
+          # the helper and not only where a spec happens to call it. The fake-niri and
+          # winapp stubs are linted too — a stub that quietly mis-logs an argv turns a
+          # real regression green.
+          bash -n niri-spaces
+          shellcheck -x niri-spaces
+          shellcheck -x tests/helpers/setup.bash tests/helpers/stubs/niri tests/helpers/stubs/winapp
+
+  # Gate 2: the behavioural suite. It is the only thing that says a space still
+  # loads the way the window-diff, the resolution order and the installer's
+  # verify-before-write rules require, and it is hermetic by construction: it
+  # fakes niri and every GUI app and borrows only the real jq from the runner, so
+  # it needs no compositor and no Wayland session and cannot drift against a host.
+  test:
+    name: bats
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq and bats-core
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+          # The CLI hard-requires a real jq, so the suite needs one; niri stays faked.
+          # apt ships a bats older than BATS_TEST_TMPDIR (bats-core 1.5), which every
+          # temp the suite creates hangs off, so install bats-core from source.
+          git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
+          sudo /tmp/bats-core/install.sh /usr/local
+          bats --version
+
+      - name: Run the suite
+        run: bats tests/
+
+  # ---------------------------------------------------------------------------
+  # SITE GATE — deliberately NOT enabled, and left here rather than invented
+  # half-wired. The moment this project serves its installer, the biggest risk is
+  # that the bytes a `curl | sh` reader runs are NOT the bytes this repo reviewed:
+  # a Pages deploy serving a stale install.sh, or a release asset swapped out from
+  # under the .sha256 that is supposed to vouch for it. The two commented checks
+  # below are the gate that closes that gap.
+  #
+  # It stays commented until the commit that also lands a Pages workflow and the
+  # release.yml that publishes the pinned tag. A gate with nothing in front of it
+  # is worse than no gate: a green check reads as a guarantee that the thing it
+  # claims to check does not exist yet. Enable both together, not before.
+  # ---------------------------------------------------------------------------
+  # site:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: The installer we serve is the installer we reviewed
+  #       run: |
+  #         set -euo pipefail
+  #         curl -fsSL "$NIRI_SPACES_INSTALLER_URL" -o served.sh
+  #         cmp install.sh served.sh
+  #     - name: The pinned release still verifies end to end
+  #       run: |
+  #         set -euo pipefail
+  #         sh install.sh --tag="$NIRI_SPACES_PINNED_TAG" --dry-run

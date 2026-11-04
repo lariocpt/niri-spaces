@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Fake `niri` for the bats suite. It is a controllable stand-in for the real
+# compositor client, and it is the ONLY thing faked: the CLI hard-requires jq,
+# so the tests run with the real jq driving the real window-diff against the
+# state this stub serves. See the state model at the bottom of this file.
+#
+# Contract the tests rely on:
+#   $NIRI_FAKE_STATE    a JSON array file = the current window list.
+#                       `niri msg --json windows` prints exactly this file.
+#   $NIRI_FAKE_ACTIONS  an append-only log. Every `niri msg action ...` (and any
+#                       other msg subcommand) is written here so tests can assert
+#                       the action sequence the CLI emitted.
+#
+# `niri msg workspaces` is the CLI's health probe (wait_for_niri polls it). It is
+# answered with success and NOT logged, so the actions log holds only real
+# actions — otherwise a single health line would front-run every sequence assert.
+set -eu
+
+state=${NIRI_FAKE_STATE:?fake niri: NIRI_FAKE_STATE not set}
+actions=${NIRI_FAKE_ACTIONS:?fake niri: NIRI_FAKE_ACTIONS not set}
+
+# Top-level form we model is `niri msg ...`; anything else is logged verbatim.
+if [ "${1:-}" != "msg" ]; then
+    printf 'niri %s\n' "$*" >>"$actions"
+    exit 0
+fi
+shift
+
+# `msg --json windows` -> serve the live window list (real jq reads this file).
+if [ "${1:-}" = "--json" ] && [ "${2:-}" = "windows" ]; then
+    if [ -s "$state" ]; then
+        cat "$state"
+    else
+        printf '[]\n'
+    fi
+    exit 0
+fi
+
+# `msg workspaces` -> the readiness probe. Succeed, do not pollute the log.
+if [ "${1:-}" = "workspaces" ]; then
+    exit 0
+fi
+
+# Everything else (the real actions) is recorded for assertions.
+printf 'niri msg %s\n' "$*" >>"$actions"
+exit 0
+
+# ---------------------------------------------------------------- state model
+# state.json is a flat JSON array of {"id": <str>, "app_id": <str>}. The fake
+# apps (winapp) append to it; launch_on_workspace reads it before/after each
+# spawn and diffs the ids whose app_id startswith() the target app to learn the
+# new window. This stub only ever serves it verbatim — jq does all manipulation.

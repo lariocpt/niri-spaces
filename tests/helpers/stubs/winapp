@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# One fake GUI app, installed under many names. Every candidate the CLI may
+# autodetect (ghostty, foot, alacritty, kitty, brave-origin, brave, firefox,
+# google-chrome, chromium, wezterm) is a copy of this file, so the tests control
+# which apps "exist" simply by which names they place on PATH.
+#
+# What it does when spawned:
+#   1. appends its argv to $NIRI_FAKE_ARGV_DIR/<name>.argv  (what got launched),
+#   2. appends a new window {"id": "win-N", "app_id": <APPID>} to $NIRI_FAKE_STATE
+#      so the CLI's before/after window-diff learns a fresh id,
+#   3. exits 0.
+#
+# The app_id it reports defaults to its own name; set $NIRI_FAKE_WIN_APPID to
+# override it (e.g. "brave-browser-nightly" to prove the prefix-match logic when
+# the space declares the bare family name "brave").
+set -eu
+
+name=$(basename "$0")
+state=${NIRI_FAKE_STATE:?winapp: NIRI_FAKE_STATE not set}
+argv_dir=${NIRI_FAKE_ARGV_DIR:?winapp: NIRI_FAKE_ARGV_DIR not set}
+counter=${NIRI_FAKE_COUNTER:?winapp: NIRI_FAKE_COUNTER not set}
+app_id=${NIRI_FAKE_WIN_APPID:-$name}
+
+# Record argv first, so a later failure still shows the command that ran.
+mkdir -p "$argv_dir"
+printf '%s %s\n' "$name" "$*" >>"$argv_dir/$name.argv"
+
+# Give the window a process-unique id via a shared counter so the diff always
+# sees a brand-new id (a reused id would not read as "new" to comm).
+n=$(( $(cat "$counter" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$n" >"$counter"
+
+[ -s "$state" ] || printf '[]\n' >"$state"
+jq --arg id "win-$n" --arg app "$app_id" \
+    '. + [{"id": $id, "app_id": $app}]' "$state" >"$state.tmp"
+mv "$state.tmp" "$state"
+exit 0
