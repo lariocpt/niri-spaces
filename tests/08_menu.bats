@@ -24,7 +24,7 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"Loading space 'alpha'"* ]]
     app_ran foot
-    ! app_ran brave
+    refute_app_ran brave
 }
 
 @test "menu: no selection (EOF) exits non-zero and loads nothing" {
@@ -35,8 +35,8 @@ foot | foot
 EOF
     run env -u WAYLAND_DISPLAY bash -c '"$0" menu </dev/null' "$NS_CLI"
     [ "$status" -ne 0 ]
-    ! app_ran foot
-    ! app_ran brave
+    refute_app_ran foot
+    refute_app_ran brave
 }
 
 @test "menu: an out-of-range index then EOF exits non-zero and loads nothing" {
@@ -51,8 +51,8 @@ brave | brave
 EOF
     run env -u WAYLAND_DISPLAY bash -c 'printf "99\n" | "$0" menu' "$NS_CLI"
     [ "$status" -ne 0 ]
-    ! app_ran foot
-    ! app_ran brave
+    refute_app_ran foot
+    refute_app_ran brave
 }
 
 @test "menu: an empty spaces dir is a clean refusal that names the directory" {

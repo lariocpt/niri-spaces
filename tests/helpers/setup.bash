@@ -77,6 +77,16 @@ app_ran() {
     [ -f "$NIRI_FAKE_ARGV_DIR/$1.argv" ]
 }
 
+# Assert an app was NOT spawned. Deliberately not `! app_ran x`: bash suppresses
+# `set -e` for a negated command, so a failing `! app_ran x` only fails the test if
+# it happens to be the last line — anywhere else it asserts nothing at all.
+refute_app_ran() {
+    if app_ran "$1"; then
+        printf 'expected %s never to be spawned, but it was\n' "$1" >&2
+        return 1
+    fi
+}
+
 # True if the fake niri logged a line containing the given fixed string.
 actions_has() {
     [ -s "$NIRI_FAKE_ACTIONS" ] && grep -F -- "$1" "$NIRI_FAKE_ACTIONS" >/dev/null
