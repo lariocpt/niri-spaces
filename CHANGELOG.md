@@ -11,6 +11,13 @@ section here. The tag being released must match the heading it releases.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-04
+
+First public release. This is the rewrite that made the repository say what the
+code does: the CLI documented in the README is the CLI that ships, the spaces it
+names are the spaces that are deployed, and installation is verified rather than
+piped-and-hoped.
+
 ### Added
 
 - **The `niri-spaces` CLI** — `load <name> [args...]` for spaces and templates,
@@ -26,8 +33,9 @@ section here. The tag being released must match the heading it releases.
   command fields expand shell variables; fields are split on `|`, so a launch command
   must not contain a pipe character.
 - **Templates** — `templates/<name>.space` with `$1` through `$9` substituted from
-  `load`'s arguments, so one file can describe a whole family of workspaces (loading
-  `myrepo-mono` with arguments `1` through `4`).
+  `load`'s arguments, so one file can describe a whole family of workspaces — one
+  workspace per service in a project, say, loaded as
+  `niri-spaces load service 3 api`.
 - **Autostart** — `~/.config/niri-spaces/autostart` is a list of `load <name>` lines
   that `niri-spaces start` runs in order and then lands on workspace 1; the shipped
   file loads `main` and `web`, which are the layouts the installer actually deploys.
@@ -79,3 +87,10 @@ section here. The tag being released must match the heading it releases.
   is then on them.
 - **Workspace command dispatch, the autostart load loop, and the app-spawn commands**
   had their bugs fixed in one pass over the layout framework.
+
+<!-- Link definitions live at the bottom (Keep a Changelog convention). They are
+     kept OUT of any release note: release.yml stops extracting at the first line
+     that looks like one of these, so the note ends with the prose. -->
+[Unreleased]: https://github.com/lariocpt/niri-spaces/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/lariocpt/niri-spaces/releases/tag/v0.1.0
+
