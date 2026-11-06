@@ -4,7 +4,7 @@ Declarative workspace layouts for [niri](https://github.com/YaLTeR/niri).
 
 One plain-text file says which apps open on which workspace. `niri-spaces load`
 reads it, launches each app, waits for its window, moves it onto the right
-workspace and sizes the column — then steps aside. No daemon, nothing running in
+workspace and sizes the column — then steps aside. By default nothing stays running in
 the background, and every move it makes is a `niri msg` call you could type
 yourself.
 
@@ -51,8 +51,8 @@ curl -fsSL https://lariocpt.github.io/niri-spaces/install.sh | sh -s -- --dry-ru
 
 The archive is fetched and checked against its SHA-256 **before** anything is
 installed — it refuses to run an artifact it cannot verify. Then it puts
-`niri-spaces` and `space-splash` in `~/.local/bin` and copies the example spaces
-and an `autostart` file into `~/.config/niri-spaces/`. Config files are copied
+`niri-spaces`, `space-splash` and `niri-terminal-pairs` in `~/.local/bin` and
+copies settings, the example spaces and an `autostart` file into `~/.config/niri-spaces/`. Config files are copied
 only where they don't already exist, so a file you edited is kept.
 
 **It does not edit your niri config.** It prints the keybind line to add and
@@ -95,9 +95,10 @@ niri-spaces load <name> [args...]   load spaces/<name>.space (or templates/<name
 niri-spaces start                   run every `load ...` line in ~/.config/niri-spaces/autostart
 niri-spaces menu                    pick a space interactively (fuzzel if available, else terminal)
 niri-spaces list                    list available spaces and templates
+niri-spaces terminal-pairs [--check] run the optional 50/50 terminal watcher
 ```
 
-Four subcommands, and that is the whole surface. `start` runs each `load` line in
+The optional `terminal-pairs` subcommand runs the terminal watcher. `start` runs each `load` line in
 `autostart` in order and finishes by focusing workspace 1.
 
 ## The `.space` format
@@ -148,6 +149,35 @@ terminal, and `brave-origin`, `brave`, `firefox`, `google-chrome`, `chromium` fo
 the browser — and the matching app id is derived for you (`$TERMINAL_APPID`,
 `$BROWSER_APPID`). Window matching is a prefix match, so `brave` also covers
 `brave-browser-nightly`. Export the variables yourself and your choice wins.
+
+## Optional 50/50 terminals
+
+The release includes the terminal pairing helper previously distributed separately.
+In `~/.config/niri-spaces/settings.json`, set `"terminal_pairs": true` to enable
+it, or `false` to disable it (the default). `niri-spaces start` launches the
+watcher after loading layouts. Changes take effect at the next Niri login;
+`niri-spaces terminal-pairs` can start it in the current session. Quit the old
+watcher before changing its settings in the current session. An environment
+override, `NIRI_SPACES_TERMINAL_PAIRS=0` or `1`, is also available.
+
+Only windows whose app ID is in `terminal_app_ids` are eligible. The defaults
+are `niri-spaces-terminal` and the legacy `work-plain-terminal`. For Foot, open
+plain shells with `foot --app-id=niri-spaces-terminal`. Keep terminal apps
+such as Yazi on their normal app IDs so they stay independent.
+
+A new eligible terminal joins a lone eligible terminal immediately to its left,
+on the same workspace, and both get equal height. A third opens a new column;
+a fourth pairs with it. Existing windows, other apps and floating windows stay
+where they are. The watcher takes a per-session lock, uses window IDs without
+changing focus, and confirms the move before resetting heights. Niri 26.04 IPC
+does not expose fullscreen or tabbed-column state; eligible IDs should be used
+for ordinary tiled shell windows.
+
+`niri-spaces terminal-pairs --check` validates settings without writes or IPC.
+The helper needs Python 3 and a running Niri session. It exits when Niri's event
+stream closes. To remove this feature, set `terminal_pairs` to false and log out
+and back in; to undo the installation entirely, remove the three installed
+executables and the configuration directory after saving any custom layouts.
 
 ## `space-splash`
 

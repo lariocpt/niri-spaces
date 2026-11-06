@@ -8,8 +8,8 @@
 # pinned --tag), downloads the archive and the .sha256 beside it, verifies the
 # checksum, and only then installs:
 #
-#   niri-spaces, space-splash   ->  $PREFIX/bin          (default ~/.local/bin)
-#   autostart, spaces/*.space   ->  ~/.config/niri-spaces/
+#   niri-spaces, space-splash, niri-terminal-pairs ->  $PREFIX/bin          (default ~/.local/bin)
+#   settings.json, autostart, spaces/*.space ->  ~/.config/niri-spaces/
 #
 # Config files are copied only where they do not already exist: a file you have
 # edited is kept, and the install says so. Nothing here edits a niri config —
@@ -327,6 +327,10 @@ ns_plan() {
     ns_say "  bins:"
     ns_say "    $NS_PREFIX/bin/niri-spaces"
     ns_say "    $NS_PREFIX/bin/space-splash"
+    if [ -f "$NS_ROOT/niri-terminal-pairs" ]; then
+        ns_say "    $NS_PREFIX/bin/niri-terminal-pairs"
+        ns_plan_file "$NS_ROOT/settings.json" "$NS_CFG/settings.json"
+    fi
     ns_say "  config (under $NS_CFG; existing files are kept):"
     ns_plan_file "$NS_ROOT/autostart" "$NS_CFG/autostart"
     for f in "$NS_ROOT"/spaces/*.space; do
@@ -418,6 +422,11 @@ main() {
     ns_install_bin "$NS_ROOT/niri-spaces" "$NS_PREFIX/bin/niri-spaces"
     ns_install_bin "$NS_ROOT/space-splash" "$NS_PREFIX/bin/space-splash"
     ns_say "installed $NS_PREFIX/bin/niri-spaces and $NS_PREFIX/bin/space-splash"
+    # Optional for compatibility with releases before terminal pairing shipped.
+    if [ -f "$NS_ROOT/niri-terminal-pairs" ]; then
+        ns_install_bin "$NS_ROOT/niri-terminal-pairs" "$NS_PREFIX/bin/niri-terminal-pairs"
+        ns_keep_or_copy "$NS_ROOT/settings.json" "$NS_CFG/settings.json"
+    fi
 
     mkdir -p "$NS_CFG/spaces" "$NS_CFG/templates" || ns_die "cannot create $NS_CFG"
     ns_keep_or_copy "$NS_ROOT/autostart" "$NS_CFG/autostart"

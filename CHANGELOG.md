@@ -9,6 +9,15 @@ The `## [X.Y.Z]` heading shape is load-bearing, not a style choice:
 next to use as the GitHub Release notes, and refuses to publish a tag that has no
 section here. The tag being released must match the heading it releases.
 
+## [0.2.0] - 2026-11-06
+
+### Added
+- Optional 50/50 terminal pairing, integrated from the standalone helper.
+- `settings.json` with an off-by-default toggle and configurable terminal app IDs.
+- `niri-spaces terminal-pairs [--check]` and session-start watcher launch after layouts load.
+- Release packaging, installer support and regression tests for the watcher.
+
+
 ## [Unreleased]
 
 ## [0.1.0] - 2026-11-04

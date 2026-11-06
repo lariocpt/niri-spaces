@@ -142,8 +142,8 @@ jobs:
             echo "sha256sum -c $TARBALL.sha256"
             echo "tar -xzf $TARBALL && cd $DIR"
             echo "mkdir -p ~/.local/bin ~/.config/niri-spaces"
-            echo "install -m755 niri-spaces space-splash ~/.local/bin/"
-            echo "cp -rn autostart spaces ~/.config/niri-spaces/"
+            echo "install -m755 niri-spaces space-splash niri-terminal-pairs ~/.local/bin/"
+            echo "cp -rn autostart settings.json spaces ~/.config/niri-spaces/"
             echo '```'
           } >> note.md
           echo '--- release note ---'

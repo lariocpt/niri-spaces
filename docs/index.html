@@ -93,7 +93,7 @@
   <p class="tag">Declarative workspace layouts for <a href="https://github.com/YaLTeR/niri">niri</a>. One plain-text file says which apps open on which workspace — <code>niri-spaces load</code> opens them and arranges the columns.</p>
   <div class="badges">
     <span>niri + Wayland only</span>
-    <span>Bash · no daemon</span>
+    <span>Bash · optional terminal pairing</span>
     <span>MIT</span>
   </div>
   <div class="cta">
@@ -135,19 +135,19 @@
 <main class="wrap">
   <section id="what">
     <h2>What it does <span class="h">A file, not a plugin</span></h2>
-    <p class="lead">A <em>space</em> is a small text file that describes a workspace: an app to launch, the workspace it belongs on, and how to size it once it appears. <code>niri-spaces load</code> reads the file, launches each app, waits for its window, moves it onto the right workspace and sets the column widths — then steps aside. There is no daemon and nothing running in the background.</p>
+    <p class="lead">A <em>space</em> is a small text file that describes a workspace: an app to launch, the workspace it belongs on, and how to size it once it appears. <code>niri-spaces load</code> reads the file, launches each app, waits for its window, moves it onto the right workspace and sets the column widths — then steps aside. Layout loading exits when complete. Optional terminal pairing runs a Python watcher when enabled.</p>
     <p>It talks to niri through <code>niri msg</code>, the same command you could type yourself. If you can drive <code>niri msg action move-window-to-workspace</code>, you understand every move niri-spaces makes.</p>
     <div class="grid">
       <div class="card"><h3>Declarative</h3><p>A layout is a file you commit, not a sequence of keypresses you repeat every session.</p></div>
       <div class="card"><h3>Portable</h3><p>Spaces reference <code>$TERMINAL</code> / <code>$BROWSER</code>; the right app is resolved on each machine, so one file works across hosts.</p></div>
-      <div class="card"><h3>Just Bash</h3><p>A single CLI script plus a Python splash. No daemon, no plugin API, nothing to keep alive.</p></div>
+      <div class="card"><h3>Just Bash</h3><p>A single CLI script plus a Python splash. Optional 50/50 terminal pairing is configured in settings.json and is off by default.</p></div>
       <div class="card"><h3>Transparent</h3><p>Every action is a <code>niri msg</code> call. When something looks wrong you can replay it by hand.</p></div>
     </div>
   </section>
 
   <section id="install">
     <h2>Install <span class="h">one command</span></h2>
-    <p>The installer downloads the pinned release, checks its SHA-256 before running anything, and copies the CLI, the splash and the example spaces into <code>~/.config/niri-spaces</code>. It writes an <code>autostart</code> file you can edit.</p>
+    <p>The installer downloads the pinned release, checks its SHA-256 before running anything, and installs three executables in <code>~/.local/bin</code> and copies settings, example spaces and an <code>autostart</code> file into <code>~/.config/niri-spaces</code>. Existing configuration is kept.</p>
     <pre class="block" id="install-cmd" tabindex="0">curl -fsSL https://lariocpt.github.io/niri-spaces/install.sh | sh</pre>
     <p class="cap">Read before you run it: <a href="https://lariocpt.github.io/niri-spaces/install.sh">the installer source</a>.</p>
     <p>After installing, load a space and you have a layout:</p>
@@ -157,13 +157,14 @@
 
   <section id="cli">
     <h2>Commands <span class="h">niri-spaces --help</span></h2>
-    <p>Four subcommands, and that is the whole surface:</p>
+    <p>Commands:</p>
     <pre class="block" id="help-text" tabindex="0">niri-spaces — declarative workspace layout manager for niri.
 
   niri-spaces load &lt;name&gt; [args...]   load spaces/&lt;name&gt;.space (or templates/&lt;name&gt;.space with $1..$9 substituted)
   niri-spaces start                   run every `load ...` line in ~/.config/niri-spaces/autostart
   niri-spaces menu                    pick a space interactively (fuzzel if available, else terminal)
   niri-spaces list                    list available spaces and templates
+  niri-spaces terminal-pairs [--check] run the optional 50/50 terminal watcher
 
 Space files live in ~/.config/niri-spaces/spaces/ and templates/.
 

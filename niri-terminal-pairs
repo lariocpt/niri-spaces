@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Pair newly opened plain shell windows; leave existing layouts alone."""
+import argparse
+import fcntl
+from pathlib import Path
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+
+APP_IDS = {"niri-spaces-terminal", "work-plain-terminal"}
+
+
+def settings():
+    directory = Path(os.environ.get("NIRI_SPACES_DIR", Path.home() / ".config/niri-spaces"))
+    path = directory / "settings.json"
+    config = json.loads(path.read_text()) if path.exists() else {}
+    enabled = config.get("terminal_pairs", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("terminal_pairs must be true or false")
+    ids = config.get("terminal_app_ids", sorted(APP_IDS))
+    if not isinstance(ids, list) or not ids or any(not isinstance(i, str) or not i for i in ids):
+        raise ValueError("terminal_app_ids must be a nonempty list of app IDs")
+    override = os.environ.get("NIRI_SPACES_TERMINAL_PAIRS")
+    if override is not None:
+        if override not in ("0", "1"):
+            raise ValueError("NIRI_SPACES_TERMINAL_PAIRS must be 0 or 1")
+        enabled = override == "1"
+    return enabled, set(ids)
+
+
+def log(message):
+    print(f"terminal pairing: {message}", file=sys.stderr, flush=True)
+
+
+def position(window):
+    return window.get("layout", {}).get("pos_in_scrolling_layout")
+
+
+def terminal(window):
+    # Niri 26.04 IPC has no fullscreen or column-display-mode field.
+    return (window.get("app_id") in APP_IDS
+            and not window.get("is_floating") and position(window) is not None)
+
+
+def partner(new, windows):
+    if not terminal(new) or new.get("workspace_id") is None:
+        return None
+    col = position(new)[0]
+    same = [w for w in windows if w.get("workspace_id") == new["workspace_id"]
+            and not w.get("is_floating") and position(w)]
+    if sum(position(w)[0] == col for w in same) != 1:
+        return None
+    left = [w for w in same if position(w)[0] == col - 1]
+    return left[0] if len(left) == 1 and terminal(left[0]) else None
+
+
+class OpenedWindows:
+    """Wait briefly for missing metadata, without reprocessing existing windows."""
+    def __init__(self):
+        self.known = set()
+        self.pending = {}
+        self.initialized = False
+
+    def observe(self, event, now):
+        if "WindowsChanged" in event:
+            self.known = {w["id"] for w in event["WindowsChanged"]["windows"]}
+            self.pending.clear()
+            self.initialized = True
+            return []
+        if not self.initialized:
+            return []
+        if "WindowClosed" in event:
+            ident = event["WindowClosed"]["id"]
+            self.known.discard(ident)
+            self.pending.pop(ident, None)
+        if "WindowOpenedOrChanged" in event:
+            window = event["WindowOpenedOrChanged"]["window"]
+            ident = window["id"]
+            if ident not in self.known:
+                self.known.add(ident)
+                self.pending[ident] = (now + 1.0, window)
+            elif ident in self.pending:
+                deadline, _ = self.pending[ident]
+                self.pending[ident] = (deadline, window)
+        for ident, layout in event.get("WindowLayoutsChanged", {}).get("changes", []):
+            if ident in self.pending:
+                deadline, window = self.pending[ident]
+                self.pending[ident] = (deadline, dict(window, layout=layout))
+        ready = []
+        for ident, (deadline, window) in list(self.pending.items()):
+            if now >= deadline or window.get("is_floating") or window.get("app_id") not in APP_IDS | {None}:
+                del self.pending[ident]
+            elif terminal(window) and window.get("workspace_id") is not None:
+                ready.append(ident)
+                del self.pending[ident]
+        return ready
+
+
+def msg(*args):
+    return subprocess.check_output(["niri", "msg", *args], text=True, timeout=3)
+
+
+def pair(ident, request=msg):
+    windows = json.loads(request("--json", "windows"))
+    new = next((w for w in windows if w["id"] == ident), None)
+    old = partner(new, windows) if new else None
+    if old is None:
+        return False
+    request("action", "consume-or-expel-window-left", "--id", str(ident))
+    # IPC actions and queries are separate; never blindly retry this toggle action.
+    # Confirm membership before resetting any heights.
+    for attempt in range(3):
+        current = json.loads(request("--json", "windows"))
+        members = [w for w in current if w["id"] in (old["id"], ident)]
+        if len(members) != 2:
+            break
+        first = next(w for w in members if w["id"] == old["id"])
+        second = next(w for w in members if w["id"] == ident)
+        if (terminal(first) and terminal(second)
+                and first["workspace_id"] == second["workspace_id"]
+                and position(first)[0] == position(second)[0]):
+            column = [w for w in current if w.get("workspace_id") == first["workspace_id"]
+                      and not w.get("is_floating") and position(w)
+                      and position(w)[0] == position(first)[0]]
+            if len(column) == 2 and position(first)[1] < position(second)[1]:
+                for wid in (first["id"], second["id"]):
+                    request("action", "reset-window-height", "--id", str(wid))
+                log(f"paired {ident} beneath {old['id']}")
+                return True
+            break
+        if attempt < 2:
+            time.sleep(0.03)
+    log(f"move of {ident} could not be confirmed; heights left unchanged")
+    return False
+
+
+def main():
+    global APP_IDS
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="validate settings without writes or IPC")
+    args = parser.parse_args()
+    try:
+        enabled, APP_IDS = settings()
+    except (OSError, ValueError, TypeError) as error:
+        raise SystemExit(f"terminal pairing: invalid settings: {error}") from error
+    if args.check or not enabled:
+        log("enabled" if enabled else "disabled")
+        return
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime or not os.environ.get("NIRI_SOCKET"):
+        raise SystemExit("Run inside Niri: XDG_RUNTIME_DIR and NIRI_SOCKET are required")
+    with open(os.path.join(runtime, "niri-terminal-pairs.lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log("already running; quit the old helper before starting this version")
+            return
+        tracker = OpenedWindows()
+        stream = subprocess.Popen(["niri", "msg", "--json", "event-stream"],
+                                  stdout=subprocess.PIPE, text=True)
+        log("watching for new plain shell terminals")
+        try:
+            for line in stream.stdout:
+                try:
+                    event = json.loads(line)
+                    for ident in tracker.observe(event, time.monotonic()):
+                        pair(ident)
+                except (subprocess.SubprocessError, ValueError, OSError) as error:
+                    log(str(error))
+            raise SystemExit("Niri event stream disconnected; restart the helper")
+        finally:
+            if stream.poll() is None:
+                stream.terminate()
+            try:
+                stream.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                stream.kill()
+                stream.wait()
+            stream.stdout.close()
+
+
+if __name__ == "__main__":
+    main()
