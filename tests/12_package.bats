@@ -30,7 +30,7 @@ setup() {
     # with "stdout: write error"), which the pages workflow already learned the hard
     # way under `set -o pipefail`.
     members=$(tar -tzf "$tarball")
-    for m in niri-spaces space-splash niri-terminal-pairs settings.json autostart LICENSE README.md install.sh; do
+    for m in niri-spaces space-splash niri-terminal-pairs niri-workspace-colors settings.json autostart LICENSE README.md install.sh; do
         case $'\n'"$members"$'\n' in
             *$'\n'"niri-spaces-0.0.0/$m"$'\n'*) ;;
             *) echo "the artifact has no niri-spaces-0.0.0/$m" >&2; return 1 ;;
@@ -53,8 +53,14 @@ setup() {
     [ -x "$BIN/niri-spaces" ]
     [ -x "$BIN/space-splash" ]
     [ -x "$BIN/niri-terminal-pairs" ]
+    [ -x "$BIN/niri-workspace-colors" ]
     [ -f "$CFG/settings.json" ]
     run "$BIN/niri-spaces" terminal-pairs --check
+    [ "$status" -eq 0 ]
+    [[ "$output" == *disabled* ]]
+    # The color-scheme watcher ships disabled too: its --check must say so
+    # without touching niri or the managed include file.
+    run "$BIN/niri-spaces" workspace-colors --check
     [ "$status" -eq 0 ]
     [[ "$output" == *disabled* ]]
     [ -f "$CFG/autostart" ]

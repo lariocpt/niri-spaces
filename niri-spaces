@@ -6,6 +6,7 @@
 #   niri-spaces menu                    pick a space interactively (fuzzel if available, else terminal)
 #   niri-spaces list                    list available spaces and templates
 #   niri-spaces terminal-pairs [--check] run the optional 50/50 terminal watcher
+#   niri-spaces workspace-colors [--check] run the optional per-workspace color scheme watcher
 #
 # Space files live in ~/.config/niri-spaces/spaces/ and templates/.
 #
@@ -254,6 +255,12 @@ cmd_start() {
     if [ -x "$helper" ]; then
         niri msg action spawn -- "$helper" >/dev/null 2>&1 || return 1
     fi
+    # Same for workspace colors: the helper reads settings.json itself and exits
+    # quietly when the feature is off, so it is safe to start unconditionally.
+    helper="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/niri-workspace-colors"
+    if [ -x "$helper" ]; then
+        niri msg action spawn -- "$helper" >/dev/null 2>&1 || return 1
+    fi
     # Land on the first workspace when done.
     niri msg action focus-workspace 1 >/dev/null 2>&1 || true
 }
@@ -292,9 +299,13 @@ if [ "$ns_sourced" -eq 0 ]; then
             shift
             exec "$(dirname "$(readlink -f "$0")")/niri-terminal-pairs" "$@"
             ;;
+        workspace-colors)
+            shift
+            exec "$(dirname "$(readlink -f "$0")")/niri-workspace-colors" "$@"
+            ;;
         menu)  cmd_menu ;;
         # -h/--help/"" never reach here: answered above the dependency preflight, so
         # help does not require the tools it is there to tell you about.
-        *) echo "unknown subcommand: $1 (try: load, start, menu, list, terminal-pairs)" >&2; exit 1 ;;
+        *) echo "unknown subcommand: $1 (try: load, start, menu, list, terminal-pairs, workspace-colors)" >&2; exit 1 ;;
     esac
 fi

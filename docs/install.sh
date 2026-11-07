@@ -8,7 +8,7 @@
 # pinned --tag), downloads the archive and the .sha256 beside it, verifies the
 # checksum, and only then installs:
 #
-#   niri-spaces, space-splash, niri-terminal-pairs ->  $PREFIX/bin          (default ~/.local/bin)
+#   niri-spaces, space-splash, niri-terminal-pairs, niri-workspace-colors ->  $PREFIX/bin          (default ~/.local/bin)
 #   settings.json, autostart, spaces/*.space ->  ~/.config/niri-spaces/
 #
 # Config files are copied only where they do not already exist: a file you have
@@ -331,6 +331,9 @@ ns_plan() {
         ns_say "    $NS_PREFIX/bin/niri-terminal-pairs"
         ns_plan_file "$NS_ROOT/settings.json" "$NS_CFG/settings.json"
     fi
+    if [ -f "$NS_ROOT/niri-workspace-colors" ]; then
+        ns_say "    $NS_PREFIX/bin/niri-workspace-colors"
+    fi
     ns_say "  config (under $NS_CFG; existing files are kept):"
     ns_plan_file "$NS_ROOT/autostart" "$NS_CFG/autostart"
     for f in "$NS_ROOT"/spaces/*.space; do
@@ -426,6 +429,10 @@ main() {
     if [ -f "$NS_ROOT/niri-terminal-pairs" ]; then
         ns_install_bin "$NS_ROOT/niri-terminal-pairs" "$NS_PREFIX/bin/niri-terminal-pairs"
         ns_keep_or_copy "$NS_ROOT/settings.json" "$NS_CFG/settings.json"
+    fi
+    # Same for releases before per-workspace color schemes shipped.
+    if [ -f "$NS_ROOT/niri-workspace-colors" ]; then
+        ns_install_bin "$NS_ROOT/niri-workspace-colors" "$NS_PREFIX/bin/niri-workspace-colors"
     fi
 
     mkdir -p "$NS_CFG/spaces" "$NS_CFG/templates" || ns_die "cannot create $NS_CFG"

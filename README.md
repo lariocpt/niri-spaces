@@ -51,7 +51,7 @@ curl -fsSL https://lariocpt.github.io/niri-spaces/install.sh | sh -s -- --dry-ru
 
 The archive is fetched and checked against its SHA-256 **before** anything is
 installed — it refuses to run an artifact it cannot verify. Then it puts
-`niri-spaces`, `space-splash` and `niri-terminal-pairs` in `~/.local/bin` and
+`niri-spaces`, `space-splash`, `niri-terminal-pairs` and `niri-workspace-colors` in `~/.local/bin` and
 copies settings, the example spaces and an `autostart` file into `~/.config/niri-spaces/`. Config files are copied
 only where they don't already exist, so a file you edited is kept.
 
@@ -96,10 +96,13 @@ niri-spaces start                   run every `load ...` line in ~/.config/niri-
 niri-spaces menu                    pick a space interactively (fuzzel if available, else terminal)
 niri-spaces list                    list available spaces and templates
 niri-spaces terminal-pairs [--check] run the optional 50/50 terminal watcher
+niri-spaces workspace-colors [--check] run the optional per-workspace color scheme watcher
 ```
 
-The optional `terminal-pairs` subcommand runs the terminal watcher. `start` runs each `load` line in
-`autostart` in order and finishes by focusing workspace 1.
+The optional `terminal-pairs` subcommand runs the terminal watcher. The optional
+`workspace-colors` subcommand runs the color scheme watcher (or its one-shot
+`status`, `recolor` and `clear` forms — see below). `start` runs each `load` line in
+`autostart` in order, launches both watchers, and finishes by focusing workspace 1.
 
 ## The `.space` format
 
@@ -176,8 +179,66 @@ for ordinary tiled shell windows.
 `niri-spaces terminal-pairs --check` validates settings without writes or IPC.
 The helper needs Python 3 and a running Niri session. It exits when Niri's event
 stream closes. To remove this feature, set `terminal_pairs` to false and log out
-and back in; to undo the installation entirely, remove the three installed
+and back in; to undo the installation entirely, remove the four installed
 executables and the configuration directory after saving any custom layouts.
+
+## Optional workspace colors
+
+In `~/.config/niri-spaces/settings.json`, set `"workspace_colors": true` to
+enable it, or `false` to disable it (the default). `niri-spaces start` launches
+the watcher after the layouts load; with the feature off it ends quietly, so it
+is safe to keep it in autostart. In a session that is already running, start it
+with `niri-spaces workspace-colors` — quit the old watcher first if you change
+its settings mid-session. The feature needs one line in your main niri config
+file, so that the managed include is actually read:
+
+```kdl
+include "workspace-colors.kdl" optional
+```
+
+niri resolves the path against the config file's directory, so with the usual
+`~/.config/niri/` layout this is the file the helper writes and keeps there.
+The `optional` property matters: while the file does not exist yet — for
+example, right after you add the line — a missing optional include is only a
+warning, whereas a plain include would make the whole config fail to load. The
+file's path is watched either way, so the first file the helper writes is
+picked up automatically.
+
+Each new unnamed workspace receives a scheme from a classic palette — `teal`,
+`purple`, `neon`, `yellow`, `green`, `maroon`, `blue`, `nord`: the dark
+backgrounds of the Color Terminal set both work machines already ship, paired
+with the accent of the theme family they belong to. By default a free scheme is
+picked at random; `workspace_color_assignment: "sequential"` hands the palette
+out in order instead, and `workspace_color_schemes` replaces it with your own
+names and colors. While two workspaces exist at the same time they never show
+the same scheme — a ninth workspace, with all eight names taken, is left
+unnamed rather than have a name stolen from another. Workspaces that already
+exist when the watcher starts keep the machine theme, and workspaces you name
+by hand are never touched.
+
+A scheme belongs to its workspace until the workspace is destroyed: the
+watcher removes the workspace's entry from the include when the workspace
+closes, a workspace that survives a reboot keeps its scheme, and entries for
+workspaces that no longer exist are pruned at the next watcher start. The
+scheme is a per-workspace `layout` part — background, focus ring, border,
+shadow, tab indicator — declared under the workspace's scheme name. niri's
+built-in config watcher reloads the include within half a second, so the
+helper never signals a reload and never polls the compositor; it only watches
+the event stream. Every fragment is validated with `niri validate` before it
+is installed, so a running niri is never left with an error notification of
+the helper's making.
+
+The one-shot forms talk to the live compositor without running a watcher:
+`niri-spaces workspace-colors status` reports the scheme on every workspace;
+`recolor [REF]` gives one workspace a fresh scheme — REF is the workspace's
+index as niri displays it, or its name — with no REF every managed workspace is
+recolor-ed; and `clear` hands the managed workspaces back unnamed and drops
+their schemes. `--check` validates the settings without writes or IPC.
+
+The helper needs Python 3 and a running Niri session. It takes a per-session
+lock and keeps its bookkeeping in `~/.config/niri-spaces/workspace-colors.json`.
+To remove the feature, set `workspace_colors` to false, run
+`niri-spaces workspace-colors clear`, and log out and back in.
 
 ## `space-splash`
 
@@ -195,7 +256,8 @@ and each terminal tells you where it is.
   id, and without `jq` that diff silently yields nothing — every app then waits
   out the 10-second "no window appeared" timeout and it looks like a slow
   compositor instead of a missing dependency.
-- **Python 3** for `space-splash`. Standard library only, no pip installs.
+- **Python 3** for `space-splash` and the two optional helpers. Standard
+  library only, no pip installs.
 
 **What it is not:** it is not a session manager. It launches the apps a space
 names and puts them where the file says. It does not restore windows you closed.
@@ -203,10 +265,11 @@ names and puts them where the file says. It does not restore windows you closed.
 ## Development
 
 ```sh
-bats tests/                              # the test suite
-python3 tools/gen-showcase.py            # re-splice the real splash into README + page
-python3 tools/check-site.py              # the docs honesty gate CI runs
-shellcheck -s sh docs/install.sh         # installer, in its real shebang's dialect
+bats tests/                                          # the bash test suite
+python3 -m unittest discover -s tests -p "test_*.py" # the Python helper suites
+python3 tools/gen-showcase.py                        # re-splice the real splash into README + page
+python3 tools/check-site.py                          # the docs honesty gate CI runs
+shellcheck -s sh docs/install.sh                     # installer, in its real shebang's dialect
 ```
 
 Run the installer against a local build without touching your system:

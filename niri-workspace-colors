@@ -1,0 +1,755 @@
+#!/usr/bin/env python3
+"""Give each new niri workspace a classic color scheme, until the workspace is destroyed.
+
+A scheme is a per-workspace layout part (background, focus ring, border, shadow,
+tab indicator) declared in the include file ~/.config/niri/workspace-colors.kdl.
+niri's own config watcher reloads it within half a second, so the helper never
+signals or polls the compositor: it watches the event stream, gives new unnamed
+workspaces a scheme name, and keeps the include file in sync with the live
+workspaces.
+
+  niri-workspace-colors                 run the watcher (settings must enable it)
+  niri-workspace-colors --check         validate settings; no writes, no IPC
+  niri-workspace-colors status          report the live schemes (read-only IPC)
+  niri-workspace-colors recolor [REF]   give one workspace a fresh scheme
+                                        (or every managed one with no REF)
+  niri-workspace-colors clear           unname the managed workspaces and drop
+                                        their schemes
+
+REF is a workspace index as niri displays it (1-based, the same number the
+workspaces query reports) or a workspace name.
+
+Workspaces that already exist when the watcher starts, and workspaces the user
+names by hand, are left exactly as they are: they keep the machine theme and
+can be recolor-ed but are never renamed on their own.
+"""
+import argparse
+import fcntl
+import json
+import os
+import random
+import re
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+LOCK_NAME = "niri-workspace-colors.lock"
+STATE_NAME = "workspace-colors.json"
+INCLUDE_NAME = "workspace-colors.kdl"
+HEADER = "// managed by niri-workspace-colors (niri-spaces); do not edit by hand\n"
+
+# Classic palette: dark backgrounds taken from the Color Terminal set that both
+# work machines already ship, paired with the accent of the theme family they
+# belong to. "neon" is the synthwave exception on purpose.
+SCHEMES = [
+    {"name": "teal",     "background": "#2b3a42", "ring_active": "#2fd8c2", "ring_inactive": "#3d5260", "border": "#3d5260", "shadow": "#1e243088", "tab_active": "#2fd8c2", "tab_inactive": "#3d5260"},
+    {"name": "purple",   "background": "#3c2d3f", "ring_active": "#c084fc", "ring_inactive": "#4d3a55", "border": "#4d3a55", "shadow": "#1e243088", "tab_active": "#c084fc", "tab_inactive": "#4d3a55"},
+    {"name": "neon",     "background": "#160f22", "ring_active": "#ff2e88", "ring_inactive": "#2a1f3d", "border": "#2a1f3d", "shadow": "#000000aa", "tab_active": "#ff2e88", "tab_inactive": "#2a1f3d"},
+    {"name": "yellow",   "background": "#332e22", "ring_active": "#ffd166", "ring_inactive": "#4a4433", "border": "#4a4433", "shadow": "#1e243088", "tab_active": "#ffd166", "tab_inactive": "#4a4433"},
+    {"name": "green",    "background": "#26332b", "ring_active": "#7ee787", "ring_inactive": "#35453c", "border": "#35453c", "shadow": "#1e243088", "tab_active": "#7ee787", "tab_inactive": "#35453c"},
+    {"name": "maroon",   "background": "#33242e", "ring_active": "#ff7b93", "ring_inactive": "#46323e", "border": "#46323e", "shadow": "#1e243088", "tab_active": "#ff7b93", "tab_inactive": "#46323e"},
+    {"name": "blue",     "background": "#2c3e50", "ring_active": "#66b8e8", "ring_inactive": "#3a4d61", "border": "#3a4d61", "shadow": "#1e243088", "tab_active": "#66b8e8", "tab_inactive": "#3a4d61"},
+    {"name": "nord",     "background": "#3b4252", "ring_active": "#88c0d0", "ring_inactive": "#4c566a", "border": "#4c566a", "shadow": "#1e243088", "tab_active": "#88c0d0", "tab_inactive": "#4c566a"},
+]
+
+HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+COLOR_KEYS = ("background", "ring_active", "ring_inactive", "border", "shadow",
+              "tab_active", "tab_inactive")
+
+
+class WakeUp(Exception):
+    """Raised inside the event-stream read when a one-shot command wakes us."""
+
+
+def log(message):
+    print(f"workspace colors: {message}", file=sys.stderr, flush=True)
+
+
+def config_dir():
+    return Path(os.environ.get("NIRI_SPACES_DIR", Path.home() / ".config/niri-spaces"))
+
+
+def include_path():
+    return Path.home() / ".config/niri" / INCLUDE_NAME
+
+
+def state_path():
+    return config_dir() / STATE_NAME
+
+
+def settings():
+    path = config_dir() / "settings.json"
+    config = json.loads(path.read_text()) if path.exists() else {}
+    enabled = config.get("workspace_colors", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("workspace_colors must be true or false")
+    assignment = config.get("workspace_color_assignment", "random")
+    if assignment not in ("random", "sequential"):
+        raise ValueError('workspace_color_assignment must be "random" or "sequential"')
+    schemes = config.get("workspace_color_schemes", None)
+    if schemes is None:
+        schemes = SCHEMES
+    if not isinstance(schemes, list) or not schemes:
+        raise ValueError("workspace_color_schemes must be a nonempty list")
+    seen = set()
+    for scheme in schemes:
+        if not isinstance(scheme, dict):
+            raise ValueError("each scheme must be an object")
+        name = scheme.get("name")
+        if not isinstance(name, str) or not name or '"' in name or "\\" in name:
+            raise ValueError("each scheme needs a name without quotes or backslashes")
+        if name in seen:
+            raise ValueError(f"scheme name '{name}' is used twice")
+        seen.add(name)
+        if not HEX_RE.match(str(scheme.get("background", ""))):
+            raise ValueError(f"scheme '{name}' needs a hex background color")
+        for key in COLOR_KEYS:
+            if key in scheme and key != "background" and not HEX_RE.match(str(scheme[key])):
+                raise ValueError(f"scheme '{name}' has an invalid {key} color")
+    return enabled, assignment, normalize_schemes(schemes)
+
+
+def normalize_schemes(schemes):
+    """Decoration colors that are absent (or empty) fall back to the background."""
+    normalized = []
+    for scheme in schemes:
+        filled = dict(scheme)
+        for key in COLOR_KEYS:
+            if not filled.get(key):
+                filled[key] = filled["background"]
+        normalized.append(filled)
+    return normalized
+
+
+def load_state():
+    path = state_path()
+    if not path.exists():
+        return {"assignments": {}, "excluded": [], "pending": {}, "cursor": 0,
+                "command": None}
+    state = json.loads(path.read_text())
+    for key, default in (("assignments", {}), ("excluded", []), ("pending", {}),
+                         ("cursor", 0), ("command", None)):
+        if key not in state:
+            state[key] = default
+    state["assignments"] = {str(k): v for k, v in state["assignments"].items()}
+    state["excluded"] = [str(i) for i in state["excluded"]]
+    state["pending"] = {str(k): v for k, v in state["pending"].items()}
+    return state
+
+
+def save_state(state):
+    path = state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
+def state_mtime():
+    try:
+        return state_path().stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def render_include(entries):
+    """entries: {scheme_name: scheme} -> KDL text for the managed include file."""
+    if not entries:
+        return HEADER
+    lines = [HEADER]
+    for name in sorted(entries):
+        scheme = entries[name]
+        lines.append(f'workspace "{name}" {{')
+        lines.append("    layout {")
+        lines.append(f'        background-color "{scheme["background"]}"')
+        lines.append(f'        focus-ring {{ active-color "{scheme["ring_active"]}";'
+                     f' inactive-color "{scheme["ring_inactive"]}"; }}')
+        lines.append(f'        border {{ inactive-color "{scheme["border"]}"; }}')
+        lines.append(f'        shadow {{ color "{scheme["shadow"]}"; }}')
+        lines.append(f'        tab-indicator {{ active-color "{scheme["tab_active"]}";'
+                     f' inactive-color "{scheme["tab_inactive"]}"; }}')
+        lines.append("    }")
+        lines.append("}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def validate_fragment(text):
+    """Run niri's own parser over a candidate file; True when it is valid."""
+    directory = include_path().parent
+    directory.mkdir(parents=True, exist_ok=True)
+    tmp = directory / ("." + INCLUDE_NAME + ".validate")
+    tmp.write_text(text)
+    try:
+        result = subprocess.run(["niri", "validate", "-c", str(tmp)],
+                                check=False, capture_output=True, timeout=10)
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def write_include(entries, pre_validate=True, validator=validate_fragment):
+    """Atomically replace the managed include; niri's watcher picks it up.
+
+    A fragment that niri's own parser rejects is never installed; the previous
+    file stays in place, so the running compositor is never left with an error
+    notification of our making.
+    """
+    text = render_include(entries)
+    if pre_validate and not validator(text):
+        raise ValueError("niri rejected the generated workspace-colors fragment")
+    path = include_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def read_include_entries():
+    """Scheme names currently present in the managed include file."""
+    path = include_path()
+    if not path.exists():
+        return set()
+    return set(re.findall(r'^workspace "([^"\\]+)"', path.read_text(), re.MULTILINE))
+
+
+def msg(*args):
+    return subprocess.check_output(["niri", "msg", *args], text=True, timeout=3)
+
+
+def workspaces(request=msg):
+    return json.loads(request("--json", "workspaces"))
+
+
+def pick_scheme(assignment, schemes, taken, cursor, rng=random):
+    """Choose the next scheme; 'taken' are names live workspaces already bear,
+    so two workspaces never show the same scheme while both exist."""
+    if assignment == "sequential":
+        for offset in range(len(schemes)):
+            scheme = schemes[(cursor + offset) % len(schemes)]
+            if scheme["name"] not in taken:
+                return scheme["name"], (cursor + offset + 1) % len(schemes)
+        return schemes[cursor % len(schemes)]["name"], (cursor + 1) % len(schemes)
+    free = [s["name"] for s in schemes if s["name"] not in taken]
+    if not free:
+        free = [s["name"] for s in schemes]
+    return rng.choice(free), cursor
+
+
+def name_workspace(idx, scheme, request=msg):
+    """Name the workspace at the displayed index. The index is exactly the
+    1-based number niri shows and reports; niri ignores the rename when another
+    workspace already bears the name, so this can never create a duplicate."""
+    request("action", "set-workspace-name", scheme, "--workspace", str(idx))
+
+
+def unname_workspace(idx, request=msg):
+    request("action", "unset-workspace-name", str(idx))
+
+
+class Reconciler:
+    """Keep the managed include in sync with the live workspaces.
+
+    The invariant that makes this safe: a scheme name may only enter the
+    include while a live workspace bears it. niri's reload creates a fresh
+    empty workspace for every config name that has no live bearer, so a stale
+    entry would leave a ghost on the screen. Names are therefore always given
+    first (a synchronous IPC action), and every pass re-derives the entries
+    from the live snapshot, which prunes anything that lost its bearer.
+    """
+
+    def __init__(self, schemes, assignment, state, request=msg,
+                 query=workspaces, validator=validate_fragment, writer=None):
+        self.schemes = {s["name"]: s for s in schemes}
+        self.assignment = assignment
+        self.state = state
+        self.request = request
+        self.query = query
+        self.validator = validator
+        self.writer = writer
+        self.started = False
+        self.snapshot = []
+        self.failed_reload = False
+        self._prevalidated = None
+        self.events = []  # test hook: every (method, args) IPC call
+        self.writes = []  # test hook: entry-name sets of every include write
+
+    def _note(self, *args):
+        self.events.append(args)
+        return self.request(*args)
+
+    def _write(self, entries):
+        """Install the include file, validating the text unless this exact text
+        was already validated (recolor validates before its rename)."""
+        text = render_include(entries)
+        if text != self._prevalidated and not self.validator(text):
+            raise ValueError("niri rejected the generated workspace-colors fragment")
+        path = include_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(text)
+        os.replace(tmp, path)
+
+    def observe(self, event):
+        """Feed one event-stream event; returns the entry set written, if any."""
+        if "ConfigLoaded" in event:
+            if event["ConfigLoaded"].get("failed"):
+                # A reload failed (writes are pre-validated, so this means the
+                # file was damaged out-of-band). Re-derive from state next pass.
+                self.failed_reload = True
+            return None
+        if "WorkspacesChanged" not in event:
+            return None
+        self.snapshot = event["WorkspacesChanged"]["workspaces"]
+        if not self.started:
+            self.started = True
+            self._startup()
+        return self.reconcile()
+
+    def _startup(self):
+        """Existing workspaces keep the machine theme; only later newcomers
+        may receive a scheme. A live workspace that still bears one of our
+        scheme names is re-adopted instead of being un-named, so a lost state
+        file can never strip names off the user's workspaces — except an empty
+        one with no state record, which is a ghost niri created from the
+        include file at startup, and is un-named so niri can clean it up."""
+        state = self.state
+        state["pending"] = {}
+        live_ids = {str(ws["id"]) for ws in self.snapshot}
+        state["excluded"] = [i for i in state["excluded"] if i in live_ids]
+        kept = {}
+        for ws in self.snapshot:
+            ident = str(ws["id"])
+            assigned = state["assignments"].get(ident)
+            if assigned and ws["name"] == assigned:
+                # A managed workspace that is still alive under our name.
+                kept[ident] = assigned
+            elif ws["name"] in self.schemes:
+                if ws["active_window_id"] is not None or ident in state["excluded"]:
+                    # It has windows (or the user named it by hand before):
+                    # re-adopt it so its colors keep working.
+                    kept[ident] = ws["name"]
+                else:
+                    unname_workspace(ws["idx"], self._note)
+                    state["excluded"].append(ident)
+            elif ident not in state["excluded"]:
+                state["excluded"].append(ident)
+        state["assignments"] = kept
+        save_state(state)
+
+    def _live(self):
+        return {ws["id"]: ws for ws in self.snapshot}
+
+    def _bearers(self):
+        return {ws["name"] for ws in self.snapshot if ws["name"]}
+
+    def _desired_entries(self):
+        """Entries for this pass: exactly the live workspaces we manage."""
+        entries = {}
+        for ws in self.snapshot:
+            name = ws["name"]
+            if not name or name not in self.schemes:
+                continue
+            scheme = self.state["assignments"].get(str(ws["id"]))
+            if scheme is None and str(ws["id"]) in self.state["pending"]:
+                scheme = self.state["pending"][str(ws["id"])]["scheme"]
+            if scheme == name:
+                entries[name] = self.schemes[name]
+        return entries
+
+    def reconcile(self):
+        state = self.state
+        live = self._live()
+        live_ids = {str(k) for k in live}
+
+        # Drop assignments whose workspace is gone; its entry is pruned below,
+        # because no live workspace bears the name any more.
+        for ident in [i for i in state["assignments"] if i not in live_ids]:
+            del state["assignments"][ident]
+
+        # A managed workspace that lost its scheme name (renamed or un-named by
+        # the user) is handed back to the user; it never gets a second scheme.
+        for ident in list(state["assignments"]):
+            ws = live.get(int(ident))
+            if ws is None:
+                continue
+            if ws["name"] != state["assignments"][ident]:
+                del state["assignments"][ident]
+                if ident not in state["excluded"]:
+                    state["excluded"].append(ident)
+
+        # New workspaces: unnamed ones receive a scheme; workspaces the user
+        # named by hand are recorded as excluded and left alone. This runs
+        # before the pending section below so that a newly user-named
+        # workspace is classified before any rename confirmation looks at it.
+        just_created = set()
+        for ws in self.snapshot:
+            ident = str(ws["id"])
+            if ident in state["assignments"] or ident in state["pending"]:
+                continue
+            if ident in state["excluded"]:
+                continue
+            if ws["name"] is not None:
+                state["excluded"].append(ident)
+                continue
+            taken = (self._bearers()
+                     | {p["scheme"] for p in state["pending"].values()})
+            scheme, state["cursor"] = pick_scheme(
+                self.assignment, list(self.schemes.values()),
+                taken, state["cursor"])
+            state["pending"][ident] = {"scheme": scheme, "attempts": 1}
+            just_created.add(ident)
+            name_workspace(ws["idx"], scheme, self._note)
+
+        # Pending renames: confirm, or give up. niri ignores a rename whose
+        # name is already held, so when the rename did not land someone else
+        # holds the name. That holder is always a workspace we manage or the
+        # user owns (every live workspace is classified before this runs), so
+        # it is never touched: the target is handed back instead. Only a
+        # rename lost for an unknown reason (no holder at all) is retried
+        # once.
+        for ident in list(state["pending"]):
+            if ident in just_created:
+                # Created during this very pass: the snapshot predates the
+                # rename, so confirmation starts with the next event.
+                continue
+            pending = state["pending"][ident]
+            ws = live.get(int(ident))
+            if ws is None:
+                del state["pending"][ident]
+                continue
+            if ws["name"] == pending["scheme"]:
+                state["assignments"][ident] = pending["scheme"]
+                del state["pending"][ident]
+                continue
+            holder = next((w for w in self.snapshot
+                           if w["name"] == pending["scheme"] and w["id"] != int(ident)),
+                          None)
+            if holder is None and ws["name"] is None and pending["attempts"] < 2:
+                pending["attempts"] += 1
+                name_workspace(ws["idx"], pending["scheme"], self._note)
+                continue
+            # Held by another workspace, or the retry budget is spent: hand
+            # the target back, leaving the holder alone.
+            del state["pending"][ident]
+            if ident not in state["excluded"]:
+                state["excluded"].append(ident)
+
+        entries = self._desired_entries()
+        force = self.failed_reload
+        self.failed_reload = False
+        if set(entries) != read_include_entries() or force:
+            self._emit_write(entries)
+        save_state(state)
+        return entries
+
+    def _emit_write(self, entries):
+        if self.writer is not None:
+            self.writer(entries)
+        else:
+            self._write(entries)
+        self.writes.append(set(entries))
+
+    def apply_command(self):
+        """Run a one-shot command queued in the state file (if any), against a
+        fresh snapshot so it is exact even when the stream has been quiet. The
+        snapshot is re-read after the command so the reconcile sees the
+        renames it just issued and writes the include in the same pass."""
+        command = self.state.get("command")
+        if not command:
+            return
+        self.state["command"] = None
+        self.snapshot = self.query()
+        self.started = True
+        self._execute(command.get("op"), command.get("ref"))
+        self.snapshot = self.query()
+        self.reconcile()
+
+    def _execute(self, op, ref):
+        if op == "clear":
+            # Unname every managed workspace first (synchronously), so the
+            # entries that reconcile prunes below have no live bearer; empty
+            # ones are then removed by niri itself.
+            for ident in list(set(self.state["assignments"]) | set(self.state["pending"])):
+                ws = self._live().get(int(ident))
+                if ws is None:
+                    continue
+                name = self.state["assignments"].get(ident) \
+                    or self.state["pending"][ident]["scheme"]
+                if ws["name"] == name:
+                    unname_workspace(ws["idx"], self._note)
+                # Excluded, not just un-named: the next reconcile must not
+                # mistake the now-plain workspace for a new one.
+                if ident not in self.state["excluded"]:
+                    self.state["excluded"].append(ident)
+            self.state["assignments"] = {}
+            self.state["pending"] = {}
+            save_state(self.state)
+            return
+        if op != "recolor":
+            return
+        targets = ([self._find_reference(ref)] if ref is not None
+                   else [ws for ws in self.snapshot
+                         if str(ws["id"]) in self.state["assignments"]])
+        for target in targets:
+            if target is None:
+                return
+            self._recolor_one(target)
+        save_state(self.state)
+
+    def _recolor_one(self, target):
+        ident = str(target["id"])
+        old = self.state["assignments"].pop(ident, None)
+        self.state["pending"].pop(ident, None)
+        if ident in self.state["excluded"]:
+            self.state["excluded"].remove(ident)
+        taken = (self._bearers()
+                 | set(self.state["assignments"].values())
+                 | {p["scheme"] for p in self.state["pending"].values()})
+        if old:
+            taken.discard(old)
+        scheme, self.state["cursor"] = pick_scheme(
+            self.assignment, list(self.schemes.values()),
+            taken, self.state["cursor"])
+        # Order matters: validate the resulting file first, then rename (the
+        # rename lands synchronously, so afterwards the old name has no bearer
+        # and the new one does), then write in the following reconcile pass.
+        # The watcher's next reload therefore never sees a name without a
+        # bearer, which is the only way a ghost workspace could be created.
+        candidate = dict(self._desired_entries())
+        if old:
+            candidate.pop(old, None)
+        candidate[scheme] = self.schemes[scheme]
+        self._prevalidated = render_include(candidate)
+        self.validator(self._prevalidated)
+        name_workspace(target["idx"], scheme, self._note)
+        self.state["assignments"][ident] = scheme
+
+    def _find_reference(self, ref):
+        if str(ref).isdigit():
+            # The displayed index and the idx field are the same 1-based number.
+            return next((ws for ws in self.snapshot if ws["idx"] == int(ref)), None)
+        return next((ws for ws in self.snapshot
+                     if ws["name"] and ws["name"].lower() == str(ref).lower()), None)
+
+
+def daemon(schemes, assignment, state):
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime or not os.environ.get("NIRI_SOCKET"):
+        raise SystemExit("Run inside Niri: XDG_RUNTIME_DIR and NIRI_SOCKET are required")
+    # "a+" never truncates on open, so a losing process cannot erase the pid
+    # of a daemon that already holds the lock; we truncate only after we own it.
+    with open(os.path.join(runtime, LOCK_NAME), "a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log("already running; quit the old helper before starting this version")
+            return
+        lock.seek(0)
+        lock.truncate()
+        lock.write(str(os.getpid()))
+        lock.flush()
+
+        # A one-shot command sends this signal to run without waiting for the
+        # next compositor event (which may not come for a long time). Raising
+        # interrupts a blocked read; the loop treats that as "nothing to read
+        # yet", processes the queued command, and blocks again.
+        def wake_handler(_signum, _frame):
+            raise WakeUp
+        signal.signal(signal.SIGUSR1, wake_handler)
+
+        reconciler = Reconciler(schemes, assignment, state)
+        stream = subprocess.Popen(["niri", "msg", "--json", "event-stream"],
+                                  stdout=subprocess.PIPE, text=True)
+        log("watching for new workspaces")
+        last_mtime = state_mtime()
+        try:
+            while True:
+                try:
+                    line = stream.stdout.readline()
+                except WakeUp:
+                    line = None
+                try:
+                    if line == "":
+                        break
+                    mtime = state_mtime()
+                    if mtime != last_mtime:
+                        last_mtime = mtime
+                        reconciler.state = load_state()
+                    reconciler.apply_command()
+                    if line:
+                        reconciler.observe(json.loads(line))
+                except WakeUp:
+                    # Woken in the middle of processing: loop and the command
+                    # (and the next event) are handled on the next turn.
+                    continue
+                except (subprocess.SubprocessError, ValueError, OSError) as error:
+                    log(str(error))
+                    reconciler.state["command"] = None
+            raise SystemExit("Niri event stream disconnected; restart the helper")
+        finally:
+            if stream.poll() is None:
+                stream.terminate()
+            try:
+                stream.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                stream.kill()
+                stream.wait()
+            stream.stdout.close()
+
+
+def daemon_pid():
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        return None
+    try:
+        with open(os.path.join(runtime, LOCK_NAME)) as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return None  # the lock is free: no daemon holds it
+    except BlockingIOError:
+        with open(os.path.join(runtime, LOCK_NAME)) as handle:
+            text = handle.read().strip()
+        return int(text) if text.isdigit() else None
+    except (OSError, ValueError):
+        return None
+
+
+def daemon_running():
+    return daemon_pid() is not None
+
+
+def queue_command(state, command):
+    """Queue a command for the running daemon and wake it if it is idle."""
+    state["command"] = command
+    save_state(state)
+    pid = daemon_pid()
+    if pid:
+        try:
+            os.kill(pid, signal.SIGUSR1)
+        except (OSError, ProcessLookupError):
+            pass
+
+
+def cmd_status():
+    try:
+        enabled, assignment, schemes = settings()
+    except (OSError, ValueError, TypeError) as error:
+        raise SystemExit(f"workspace colors: invalid settings: {error}") from error
+    if not enabled:
+        log("disabled (set workspace_colors true in settings.json)")
+        return
+    state = load_state()
+    try:
+        live = workspaces()
+    except (OSError, subprocess.SubprocessError):
+        raise SystemExit("workspace colors: niri is not reachable (NIRI_SOCKET?)")
+    print("workspace colors: enabled")
+    for ws in live:
+        ident = str(ws["id"])
+        scheme = state["assignments"].get(ident)
+        if scheme is None and ident in state["pending"]:
+            scheme = f'{state["pending"][ident]["scheme"]} (pending)'
+        label = ws["name"] or "(unnamed)"
+        if scheme and (ws["name"] == scheme or "pending" in scheme):
+            print(f"  [{ws['idx']}] {label:<16} {scheme}")
+        else:
+            note = "" if (ws["name"] or ws["active_window_id"] is not None) else " (empty)"
+            print(f"  [{ws['idx']}] {label:<16} no scheme{note}")
+    entries = read_include_entries()
+    print(f"  include entries: {', '.join(sorted(entries)) or '(none)'}")
+    print(f"  left alone: {len(state['excluded'])} existing workspace(s)")
+    if not daemon_running():
+        print("  helper not running: start it with niri-spaces start")
+
+
+def cmd_recolor(ref):
+    try:
+        enabled, assignment, schemes = settings()
+    except (OSError, ValueError, TypeError) as error:
+        raise SystemExit(f"workspace colors: invalid settings: {error}") from error
+    state = load_state()
+    if daemon_running():
+        queue_command(state, {"op": "recolor", "ref": ref})
+        log(f"queued recolor of {ref or 'all managed workspaces'} "
+            "for the running helper")
+        return
+    one_shot(Reconciler(schemes, assignment, state), "recolor", ref)
+
+
+def cmd_clear():
+    try:
+        enabled, assignment, schemes = settings()
+    except (OSError, ValueError, TypeError) as error:
+        raise SystemExit(f"workspace colors: invalid settings: {error}") from error
+    state = load_state()
+    if daemon_running():
+        queue_command(state, {"op": "clear"})
+        log("queued clear for the running helper")
+        return
+    if not (state["assignments"] or state["pending"] or read_include_entries()):
+        log("nothing to clear")
+        return
+    one_shot(Reconciler(schemes, assignment, state), "clear", None)
+    log("cleared: managed workspaces are un-named and their schemes dropped")
+
+
+def one_shot(reconciler, op, ref):
+    """Run a command without the daemon: same logic, driven by one snapshot."""
+    try:
+        live = reconciler.query()
+    except (OSError, subprocess.SubprocessError):
+        raise SystemExit("workspace colors: niri is not reachable (NIRI_SOCKET?)")
+    reconciler.snapshot = live
+    reconciler.started = True
+    reconciler._execute(op, ref)
+    reconciler.snapshot = reconciler.query()
+    reconciler.reconcile()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true",
+                        help="validate settings without writes or IPC")
+    parser.add_argument("command", nargs="?",
+                        choices=["status", "recolor", "clear"],
+                        help="one-shot command (otherwise: run the watcher)")
+    parser.add_argument("ref", nargs="?",
+                        help="workspace index (as niri displays it) or name, for recolor")
+    args = parser.parse_args()
+    try:
+        enabled, assignment, schemes = settings()
+    except (OSError, ValueError, TypeError) as error:
+        raise SystemExit(f"workspace colors: invalid settings: {error}") from error
+    if args.check:
+        if enabled:
+            log(f"enabled, {len(schemes)} scheme(s), assignment={assignment}")
+        else:
+            log("disabled (set workspace_colors true in settings.json)")
+        return
+    if args.command == "status":
+        cmd_status()
+        return
+    if args.command is None and not enabled:
+        # Daemon path only: `niri-spaces start` launches the helper regardless
+        # of the toggle, so a disabled watcher ends quietly (exit 0) instead of
+        # leaving a failed session behind.
+        log("disabled (set workspace_colors true in settings.json)")
+        return
+    if not enabled:
+        raise SystemExit("workspace colors: disabled (set workspace_colors true "
+                         "in settings.json)")
+    if args.command == "recolor":
+        cmd_recolor(args.ref)
+        return
+    if args.command == "clear":
+        cmd_clear()
+        return
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    daemon(schemes, assignment, load_state())
+
+
+if __name__ == "__main__":
+    main()

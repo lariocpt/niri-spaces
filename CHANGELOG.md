@@ -9,6 +9,42 @@ The `## [X.Y.Z]` heading shape is load-bearing, not a style choice:
 next to use as the GitHub Release notes, and refuses to publish a tag that has no
 section here. The tag being released must match the heading it releases.
 
+## [0.3.0] - 2026-11-07
+
+### Added
+- Per-workspace color schemes that persist until the workspace is destroyed.
+  Every NEW workspace receives a scheme from a classic palette (teal, purple,
+  neon, yellow, green, maroon, blue, nord — the theme families both work
+  machines already ship) while workspaces that already exist keep the machine
+  theme. When the workspace is closed its scheme entry is removed, and nothing
+  is written that niri's own parser would not accept.
+- `niri-workspace-colors`, a Python watcher (off by default, like
+  terminal pairing): it follows niri's event stream, gives each new unnamed
+  workspace a free scheme name, and keeps the include file
+  `~/.config/niri/workspace-colors.kdl` in sync with the live workspaces.
+  niri's built-in config watcher applies the change within half a second, so
+  the helper never signals a reload and never polls the compositor.
+- `niri-spaces workspace-colors [--check | status | recolor [REF] | clear]`:
+  validate the settings, report the live schemes, give one workspace (by the
+  index niri displays, or by name — or every managed workspace with no
+  reference) a fresh scheme, or hand the managed workspaces back and drop
+  their schemes.
+- Settings: `workspace_colors` toggle (default false),
+  `workspace_color_assignment` (`random` or `sequential`) and custom
+  `workspace_color_schemes`.
+- `niri-spaces start` now launches the watcher after the layouts load,
+  alongside the terminal-pairs watcher.
+- Release packaging, installer support and regression tests for the watcher.
+
+### Notes
+- A scheme name may only enter the include file while a live workspace bears
+  it, because niri creates an empty workspace for every config name without a
+  bearer; the watcher therefore renames first and prunes from a fresh
+  snapshot afterwards, and pre-validates every candidate file with
+  `niri validate` before installing it.
+- A workspace the user renames or un-names is handed back and left alone
+  from then on; workspaces the user names by hand are never touched.
+
 ## [0.2.0] - 2026-11-06
 
 ### Added

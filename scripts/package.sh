@@ -51,6 +51,7 @@ trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/$name/spaces"
 install -m 0755 niri-spaces            "$stage/$name/niri-spaces"
 install -m 0755 niri-terminal-pairs    "$stage/$name/niri-terminal-pairs"
+install -m 0755 niri-workspace-colors  "$stage/$name/niri-workspace-colors"
 install -m 0644 settings.json          "$stage/$name/settings.json"
 install -m 0755 space-splash           "$stage/$name/space-splash"
 install -m 0644 autostart              "$stage/$name/autostart"
