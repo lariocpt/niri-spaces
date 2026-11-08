@@ -8,7 +8,7 @@
 # pinned --tag), downloads the archive and the .sha256 beside it, verifies the
 # checksum, and only then installs:
 #
-#   niri-spaces, space-splash, niri-terminal-pairs, niri-workspace-colors ->  $PREFIX/bin          (default ~/.local/bin)
+#   niri-spaces, space-splash, niri-terminal-pairs, niri-workspace-colors, niri-workspace-strip ->  $PREFIX/bin          (default ~/.local/bin)
 #   settings.json, autostart, spaces/*.space ->  ~/.config/niri-spaces/
 #
 # Config files are copied only where they do not already exist: a file you have
@@ -20,8 +20,12 @@
 #
 #   niri-spaces-X.Y.Z.tar.gz — a gzip'ed tar whose single root entry is
 #     niri-spaces-X.Y.Z/
-#       niri-spaces    the CLI
-#       space-splash   the splash
+#       niri-spaces            the CLI
+#       space-splash           the splash
+#       niri-terminal-pairs    the terminal pairing daemon
+#       niri-workspace-colors  the workspace color watcher
+#       niri-workspace-strip   the draggable workspace strip
+#       settings.json          the default configuration
 #       autostart      the default autostart file
 #       spaces/        the *.space layouts
 #       LICENSE
@@ -334,6 +338,9 @@ ns_plan() {
     if [ -f "$NS_ROOT/niri-workspace-colors" ]; then
         ns_say "    $NS_PREFIX/bin/niri-workspace-colors"
     fi
+    if [ -f "$NS_ROOT/niri-workspace-strip" ]; then
+        ns_say "    $NS_PREFIX/bin/niri-workspace-strip"
+    fi
     ns_say "  config (under $NS_CFG; existing files are kept):"
     ns_plan_file "$NS_ROOT/autostart" "$NS_CFG/autostart"
     for f in "$NS_ROOT"/spaces/*.space; do
@@ -433,6 +440,10 @@ main() {
     # Same for releases before per-workspace color schemes shipped.
     if [ -f "$NS_ROOT/niri-workspace-colors" ]; then
         ns_install_bin "$NS_ROOT/niri-workspace-colors" "$NS_PREFIX/bin/niri-workspace-colors"
+    fi
+    # Same for releases before the draggable workspace strip shipped.
+    if [ -f "$NS_ROOT/niri-workspace-strip" ]; then
+        ns_install_bin "$NS_ROOT/niri-workspace-strip" "$NS_PREFIX/bin/niri-workspace-strip"
     fi
 
     mkdir -p "$NS_CFG/spaces" "$NS_CFG/templates" || ns_die "cannot create $NS_CFG"

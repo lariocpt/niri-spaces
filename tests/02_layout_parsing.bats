@@ -9,6 +9,12 @@ setup() { ns_setup; }
 
 @test "layout: @workspace by name is echoed and used as the move target" {
     install_stub_apps foot
+    # Since 0.4.0 an *absent* name takes the create path (spec'd in
+    # 16_workspace_ops); this test keeps exercising the reuse shape, so the
+    # name must already bear an empty workspace for the parser to target.
+    write_workspaces <<'EOF'
+[{"id":7,"idx":2,"name":"myspace","output":"eDP-1","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null}]
+EOF
     write_space ws <<'EOF'
 @workspace myspace
 foot | foot

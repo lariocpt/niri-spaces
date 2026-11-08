@@ -27,13 +27,15 @@ ns_setup() {
     export HOME="$BATS_TEST_TMPDIR/home"
     mkdir -p "$HOME"
 
-    # The fake niri's whole world: a window list, an actions log, an argv dir,
-    # and a counter that hands out fresh window ids.
+    # The fake niri's whole world: a window list, a workspace list, an actions
+    # log, an argv dir, and a counter that hands out fresh window ids.
     export NIRI_FAKE_STATE="$BATS_TEST_TMPDIR/state.json"
+    export NIRI_FAKE_WORKSPACES="$BATS_TEST_TMPDIR/workspaces.json"
     export NIRI_FAKE_ACTIONS="$BATS_TEST_TMPDIR/actions.log"
     export NIRI_FAKE_ARGV_DIR="$BATS_TEST_TMPDIR/argv"
     export NIRI_FAKE_COUNTER="$BATS_TEST_TMPDIR/counter"
     printf '[]\n' >"$NIRI_FAKE_STATE"
+    printf '[]\n' >"$NIRI_FAKE_WORKSPACES"
     : >"$NIRI_FAKE_ACTIONS"
     echo 0 >"$NIRI_FAKE_COUNTER"
     mkdir -p "$NIRI_FAKE_ARGV_DIR"
@@ -92,6 +94,16 @@ actions_has() {
     [ -s "$NIRI_FAKE_ACTIONS" ] && grep -F -- "$1" "$NIRI_FAKE_ACTIONS" >/dev/null
 }
 
+# Counterpart of actions_has, safe under `set -e` for the same reason
+# refute_app_ran exists: a bare `! actions_has x` disables errexit and so
+# asserts nothing unless it happens to be the last line of the test.
+refute_actions_has() {
+    if actions_has "$1"; then
+        printf 'expected no logged action containing: %s\n' "$1" >&2
+        return 1
+    fi
+}
+
 # The nth action logged (1-based), stripped of the leading "niri msg ".
 nth_action() {
     sed -n "${1}p" "$NIRI_FAKE_ACTIONS" | sed 's/^niri msg //'
@@ -100,6 +112,13 @@ nth_action() {
 # Write a .space file into the config dir's spaces/ subdir (content on stdin).
 write_space() {
     cat >"$NIRI_SPACES_DIR/spaces/$1.space"
+}
+
+# Seed the fake niri's workspace list. Takes one JSON array on stdin; the
+# object fields mirror `niri msg --json workspaces` (id, idx, name,
+# active_window_id, is_focused, ...).
+write_workspaces() {
+    cat >"$NIRI_FAKE_WORKSPACES"
 }
 
 # Write a template into templates/ (content on stdin).

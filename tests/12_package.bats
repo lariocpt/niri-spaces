@@ -30,7 +30,7 @@ setup() {
     # with "stdout: write error"), which the pages workflow already learned the hard
     # way under `set -o pipefail`.
     members=$(tar -tzf "$tarball")
-    for m in niri-spaces space-splash niri-terminal-pairs niri-workspace-colors settings.json autostart LICENSE README.md install.sh; do
+    for m in niri-spaces space-splash niri-terminal-pairs niri-workspace-colors niri-workspace-strip settings.json autostart LICENSE README.md install.sh; do
         case $'\n'"$members"$'\n' in
             *$'\n'"niri-spaces-0.0.0/$m"$'\n'*) ;;
             *) echo "the artifact has no niri-spaces-0.0.0/$m" >&2; return 1 ;;
@@ -63,6 +63,14 @@ setup() {
     run "$BIN/niri-spaces" workspace-colors --check
     [ "$status" -eq 0 ]
     [[ "$output" == *disabled* ]]
+    # ... and so does the workspace strip. Its --check stays quiet about niri
+    # and reports the GTK binding either way (a runner without gtk-layer-shell
+    # must still exit 0 with an explanation, not a traceback).
+    [ -x "$BIN/niri-workspace-strip" ]
+    run "$BIN/niri-spaces" workspace-strip --check
+    [ "$status" -eq 0 ]
+    [[ "$output" == *disabled* ]]
+    [[ "$output" == *"gtk layer-shell"* ]]
     [ -f "$CFG/autostart" ]
     [ -f "$CFG/spaces/main.space" ]
 

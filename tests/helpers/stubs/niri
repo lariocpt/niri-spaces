@@ -7,6 +7,13 @@
 # Contract the tests rely on:
 #   $NIRI_FAKE_STATE    a JSON array file = the current window list.
 #                       `niri msg --json windows` prints exactly this file.
+#   $NIRI_FAKE_WORKSPACES  a JSON array file = the current workspace list.
+#                       `niri msg --json workspaces` prints exactly this file.
+#                       Three actions mutate it like the real compositor:
+#                       new-workspace appends a fresh slot, move-window-to-
+#                       workspace to an index past the end appends the slot
+#                       that receives the window, and set-workspace-name
+#                       stamps the name onto the workspace at that index.
 #   $NIRI_FAKE_ACTIONS  an append-only log. Every `niri msg action ...` (and any
 #                       other msg subcommand) is written here so tests can assert
 #                       the action sequence the CLI emitted.
@@ -36,8 +43,86 @@ if [ "${1:-}" = "--json" ] && [ "${2:-}" = "windows" ]; then
     exit 0
 fi
 
+# `msg --json workspaces` -> serve the live workspace list. Same idea as the
+# window list: $NIRI_FAKE_WORKSPACES is a JSON array file the test writes (or
+# the new-workspace rule below appends to); absent means "no workspaces".
+if [ "${1:-}" = "--json" ] && [ "${2:-}" = "workspaces" ]; then
+    if [ -n "${NIRI_FAKE_WORKSPACES:-}" ] && [ -s "$NIRI_FAKE_WORKSPACES" ]; then
+        cat "$NIRI_FAKE_WORKSPACES"
+    else
+        printf '[]\n'
+    fi
+    exit 0
+fi
+
+# `msg action new-workspace ...` -> log it, then materialise the slot the real
+# compositor would create: a fresh id above every seen id, appended at the
+# end. This is what makes the CLI's "create a workspace" round-trip (action,
+# then re-query) observable in a test.
+if [ "${1:-}" = "action" ] && [ "${2:-}" = "new-workspace" ]; then
+    printf 'niri msg %s\n' "$*" >>"$actions"
+    if [ -n "${NIRI_FAKE_WORKSPACES:-}" ]; then
+        jq '((map(.id) | max) // 0) + 1 as $id
+            | ((map(.idx) | max) // 0) + 1 as $idx
+            | . + [{id: $id, idx: $idx, name: null, output: "eDP-1",
+                    is_urgent: false, is_active: false, is_focused: false,
+                    active_window_id: null}]' \
+            "$NIRI_FAKE_WORKSPACES" >"$NIRI_FAKE_WORKSPACES.new"
+        mv "$NIRI_FAKE_WORKSPACES.new" "$NIRI_FAKE_WORKSPACES"
+    fi
+    exit 0
+fi
+
 # `msg workspaces` -> the readiness probe. Succeed, do not pollute the log.
 if [ "${1:-}" = "workspaces" ]; then
+    exit 0
+fi
+
+# `msg action set-workspace-name NAME --workspace IDX` -> log it, then stamp
+# the name onto the workspace at that index, as the real compositor does. This
+# is what lets a test see the CLI's create-then-name round trip take effect.
+if [ "${1:-}" = "action" ] && [ "${2:-}" = "set-workspace-name" ]; then
+    printf 'niri msg %s\n' "$*" >>"$actions"
+    if [ -n "${NIRI_FAKE_WORKSPACES:-}" ] && [ -s "$NIRI_FAKE_WORKSPACES" ]; then
+        jq --argjson i "$5" --arg n "$3" 'map(if .idx == $i then .name = $n else . end)' \
+            "$NIRI_FAKE_WORKSPACES" >"$NIRI_FAKE_WORKSPACES.new"
+        mv "$NIRI_FAKE_WORKSPACES.new" "$NIRI_FAKE_WORKSPACES"
+    fi
+    exit 0
+fi
+
+# `msg action move-window-to-workspace --window-id ID TARGET` -> log it. When
+# TARGET is a number past the end of the list, niri opens one unnamed slot at
+# that index to receive the window (26.04 behaviour the CLI's create path
+# depends on), so the stub appends exactly that slot. Either way the target
+# workspace then reports the window as its active one, which is what makes a
+# workspace "busy" to the CLI's resolver. A by-name target is the same stamp
+# on the workspace bearing that name.
+if [ "${1:-}" = "action" ] && [ "${2:-}" = "move-window-to-workspace" ]; then
+    printf 'niri msg %s\n' "$*" >>"$actions"
+    win=${*: -2:1}
+    target=${*: -1}
+    if [ -n "${NIRI_FAKE_WORKSPACES:-}" ]; then
+        count=$(jq 'length' "${NIRI_FAKE_WORKSPACES:-/dev/null}" 2>/dev/null || echo 0)
+        if [[ "$target" =~ ^[0-9]+$ ]] && [ "$target" -gt "$count" ]; then
+            jq '((map(.id) | max) // 0) + 1 as $id
+                | . + [{id: $id, idx: '"$target"', name: null, output: "eDP-1",
+                        is_urgent: false, is_active: false, is_focused: false,
+                        active_window_id: null}]' \
+                "$NIRI_FAKE_WORKSPACES" >"$NIRI_FAKE_WORKSPACES.new"
+            mv "$NIRI_FAKE_WORKSPACES.new" "$NIRI_FAKE_WORKSPACES"
+        fi
+        if [[ "$target" =~ ^[0-9]+$ ]]; then
+            jq --argjson i "$target" --arg w "$win" \
+                'map(if .idx == $i then .active_window_id = $w else . end)' \
+                "$NIRI_FAKE_WORKSPACES" >"$NIRI_FAKE_WORKSPACES.new"
+        else
+            jq --arg n "$target" --arg w "$win" \
+                'map(if .name == $n then .active_window_id = $w else . end)' \
+                "$NIRI_FAKE_WORKSPACES" >"$NIRI_FAKE_WORKSPACES.new"
+        fi
+        mv "$NIRI_FAKE_WORKSPACES.new" "$NIRI_FAKE_WORKSPACES"
+    fi
     exit 0
 fi
 

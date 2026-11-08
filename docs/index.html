@@ -128,6 +128,8 @@
     <li><a href="#cli">Commands</a></li>
     <li><a href="#format">.space format</a></li>
     <li><a href="#example">Example</a></li>
+    <li><a href="#strip">Workspace strip</a></li>
+    <li><a href="#menu">Numbered menu</a></li>
     <li><a href="#requirements">Requirements</a></li>
   </ul>
 </nav>
@@ -140,7 +142,7 @@
     <div class="grid">
       <div class="card"><h3>Declarative</h3><p>A layout is a file you commit, not a sequence of keypresses you repeat every session.</p></div>
       <div class="card"><h3>Portable</h3><p>Spaces reference <code>$TERMINAL</code> / <code>$BROWSER</code>; the right app is resolved on each machine, so one file works across hosts.</p></div>
-      <div class="card"><h3>Just Bash</h3><p>A single CLI script plus a Python splash. Optional 50/50 terminal pairing is configured in settings.json and is off by default.</p></div>
+      <div class="card"><h3>Just Bash</h3><p>A single CLI script plus a Python splash. Optional watchers — 50/50 terminal pairing, per-workspace colours and the coloured workspace strip — are configured in settings.json and are off by default.</p></div>
       <div class="card"><h3>Transparent</h3><p>Every action is a <code>niri msg</code> call. When something looks wrong you can replay it by hand.</p></div>
     </div>
   </section>
@@ -162,15 +164,19 @@
 
   niri-spaces load &lt;name&gt; [args...]   load spaces/&lt;name&gt;.space (or templates/&lt;name&gt;.space with $1..$9 substituted)
   niri-spaces start                   run every `load ...` line in ~/.config/niri-spaces/autostart
-  niri-spaces menu                    pick a space interactively (fuzzel if available, else terminal)
+  niri-spaces menu                    pick a space from a numbered popup list (fuzzel if available, else terminal)
   niri-spaces list                    list available spaces and templates
   niri-spaces terminal-pairs [--check] run the optional 50/50 terminal watcher
   niri-spaces workspace-colors [--check] run the optional per-workspace color scheme watcher
+  niri-spaces workspace-strip [--check | status | reorder FROM TO] the optional coloured workspace strip
 
 Space files live in ~/.config/niri-spaces/spaces/ and templates/.
 
 Layout file format (.space) — parsing ported from niri-wspaces-loader:
-  @workspace &lt;name-or-index&gt;
+  @workspace &lt;name-or-index&gt;   a name nothing bears yet is created fresh;
+                               an empty bearer is reused; a name that
+                               already holds windows opens a new
+                               "&lt;name&gt; 2" sibling instead
   &lt;app_id&gt; | &lt;launch command&gt; [| &lt;env vars&gt; [| &lt;capture var&gt;]]
   @action &lt;shell command&gt;            # may use captured window-id vars
 Lines starting with # and blank lines are ignored.</pre>
@@ -184,7 +190,7 @@ Lines starting with # and blank lines are ignored.</pre>
     <table>
       <thead><tr><th>Line</th><th>Meaning</th></tr></thead>
       <tbody>
-        <tr><td><code>@workspace &lt;name-or-index&gt;</code></td><td>All following app lines target this workspace (a name or a number).</td></tr>
+        <tr><td><code>@workspace &lt;name-or-index&gt;</code></td><td>All following app lines target this workspace (a name or a number). A name nothing bears yet is created fresh; an empty workspace already bearing it is reused; a name that already holds windows opens a new <code>"&lt;name&gt; 2"</code> sibling instead of merging into it.</td></tr>
         <tr><td><code>app_id | command | env | capture</code></td><td>Launch <code>command</code>, then find the window whose app id matches <code>app_id</code> and move it to the current workspace. The last two fields are optional: <code>env</code> is exported for the launch, <code>capture</code> names a variable that receives the window id.</td></tr>
         <tr><td><code>@action &lt;shell&gt;</code></td><td>Run a shell command, e.g. to focus a captured window and size its column.</td></tr>
         <tr><td><code># …</code></td><td>A comment; blank lines are ignored too.</td></tr>
@@ -214,12 +220,34 @@ $BROWSER_APPID | $BROWSER | | browser_id
     <p class="cap">Run it with <code>niri-spaces load default</code>.</p>
   </section>
 
+  <section id="strip">
+    <h2>The workspace strip <span class="h">colours you can drag</span></h2>
+    <p>Turn <code>workspace_strip</code> on in settings.json and a thin overlay appears at the top edge: one numbered chip per workspace, coloured by the same scheme the color watcher assigns. It reserves no space and hides itself under your bar, so it sits beside waybar rather than fighting it.</p>
+    <div class="table-scroll" tabindex="0">
+    <table>
+      <thead><tr><th>Gesture</th><th>Effect</th></tr></thead>
+      <tbody>
+        <tr><td><code>click</code> a chip</td><td>Focus that workspace. A plain click never moves anything.</td></tr>
+        <tr><td><code>drag</code> a chip onto another position</td><td>Reorder: the workspace moves to the index under the pointer and <strong>keeps its colour</strong>, because the colour is bound to the workspace, not the slot.</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>The same move is available headless — <code>niri-spaces workspace-strip reorder FROM TO</code> issues exactly the drag's niri action, and <code>workspace-strip status</code> prints the strip's current order in the terminal.</p>
+    <div class="note">The strip is a separate helper (<code>niri-workspace-strip</code>, Python 3 + GTK 3 via <code>gtk-layer-shell</code>). It is optional, off by default, and started by <code>niri-spaces start</code>; <code>niri-spaces workspace-strip --check</code> reports the toggle and whether the GTK bindings are importable without touching a running compositor.</div>
+  </section>
+
+  <section id="menu">
+    <h2>Numbered menu <span class="h">a workspace per keystroke</span></h2>
+    <p><code>niri-spaces menu</code> lists every space as a numbered row in fuzzel (falling back to a terminal list). Typing the row's number narrows the list to that one entry, so a space opens by typing its number and pressing Enter — no reading required. Bind it to a key in your niri config; the installer only prints the line, it does not edit yours.</p>
+  </section>
+
   <section id="requirements">
     <h2>Requirements <span class="h">and honesty</span></h2>
     <ul>
       <li><strong>niri</strong> — niri-spaces drives the compositor only through <code>niri msg</code>. It needs a running niri session.</li>
       <li><strong>Wayland</strong> — it is a niri tool; it does not manage X11 or other compositors.</li>
       <li><strong>jq</strong> and <strong>bash</strong> — the CLI is bash and needs <code>jq</code>; the splash is Python&nbsp;3.</li>
+      <li><strong>python3-gi and gtk-layer-shell</strong> — only the workspace strip needs these; the CLI, menu and splash run without them.</li>
     </ul>
     <p class="lead">This is not a session manager and does not restore windows you closed. It launches the apps a space names and places them — start from there.</p>
   </section>
