@@ -9,6 +9,52 @@ The `## [X.Y.Z]` heading shape is load-bearing, not a style choice:
 next to use as the GitHub Release notes, and refuses to publish a tag that has no
 section here. The tag being released must match the heading it releases.
 
+## [0.4.0] - 2026-11-09
+
+### Added
+- `@workspace` name resolution. A name nothing bears yet is created fresh and
+  named; a name an empty workspace already bears is reused; a name that already
+  holds windows opens a new `"<name> 2"` sibling instead of merging into the
+  busy workspace. Every `@workspace` line resolves against the live compositor,
+  so a later section re-mentioning a name an earlier section just created sees
+  it occupied and opens the sibling rather than a duplicate slot.
+- `niri-spaces menu` numbers its popup rows: typing a row's number narrows the
+  fuzzel list to that entry alone, so a space opens by typing its number and
+  pressing Enter. The terminal fallback is unchanged.
+- `niri-workspace-strip`, an optional coloured workspace strip (off by
+  default): one numbered chip per workspace, wearing the background and accent
+  of the colour scheme its workspace bears. A click focuses; a drag of chip i
+  onto position j performs exactly `move-workspace-to-index <j>
+  --reference <i>`, and the colour travels with the workspace because the
+  colour is the workspace's name. The strip reserves no space and can be
+  dropped below a bar that owns the corner.
+- `niri-spaces workspace-strip [--check | status | reorder FROM TO]`: validate
+  settings and GTK bindings without touching a compositor, print the chips in
+  displayed order, or perform a drag's exact move from the command line.
+- Settings: `workspace_strip` toggle (default false), `workspace_strip_height`
+  (16-128 logical px, default 30) and `workspace_strip_margin_top` (0-512 px,
+  default 0, which sits the strip in the corner itself).
+- `niri-spaces start` spawns the strip alongside the other watchers after the
+  layouts load; with the feature off it ends quietly, so it is safe to keep it
+  in autostart.
+- Release packaging, installer support and regression tests for all of the above.
+
+### Fixed
+- `niri-workspace-colors` was committed without its executable bit, so a
+  `start` run straight from a checkout silently skipped the color watcher.
+  Packaged installs were unaffected because packaging rewrites member modes,
+  which is exactly why the bug survived a release.
+
+### Notes
+- niri cannot create a named workspace on demand, so the create path parks the
+  first window in a fresh slot (moving it past the last workspace appends one)
+  and names the slot afterwards; later windows then move by name.
+- Reordering preserves colours by construction: niri moves the workspace, name
+  and all, and the strip holds no order state of its own.
+- The strip is the first feature with a dependency beyond the Python standard
+  library: `python3-gi` with GTK 3 and the `gtk-layer-shell` bindings, from
+  your distribution.
+
 ## [0.3.1] - 2026-11-09
 
 ### Added

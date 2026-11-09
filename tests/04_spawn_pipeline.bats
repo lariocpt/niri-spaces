@@ -41,6 +41,11 @@ EOF
     install_stub_apps foot brave
     export TERMINAL=foot BROWSER=brave
     cp "$NS_REPO_ROOT/spaces/default.space" "$NIRI_SPACES_DIR/spaces/default.space"
+    # "default" seeded empty so both windows move to it by name; an absent
+    # name would open it through the create path (spec'd in 16_workspace_ops).
+    write_workspaces <<'EOF'
+[{"id":1,"idx":1,"name":"default","output":"eDP-1","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null}]
+EOF
     run "$NS_CLI" load default
     [ "$status" -eq 0 ]
     # Terminal first, browser second, both moved to workspace "default" (its

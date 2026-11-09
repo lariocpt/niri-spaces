@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Fake `fuzzel` (--dmenu mode) for the bats suite. Real fuzzel shows the
+# piped lines and prints the chosen one back verbatim (number prefix and all).
+# The stub:
+#   * records every line it was offered into $NS_MENU_INPUT (so a test can
+#     assert the exact rows and numbering the CLI produced),
+#   * "picks" the contents of $NS_MENU_PICK when that variable is set, and
+#     otherwise the first offered line,
+#   * exits 128 (like a cancelled real fuzzel selection) when $NS_MENU_CANCEL
+#     is set or the menu was offered no lines at all.
+set -eu
+
+input=$(cat)
+
+if [ -n "${NS_MENU_INPUT:-}" ]; then
+    printf '%s\n' "$input" >"$NS_MENU_INPUT"
+fi
+
+if [ -n "${NS_MENU_CANCEL:-}" ]; then
+    exit 128
+fi
+
+if [ -n "${NS_MENU_PICK:-}" ]; then
+    printf '%s\n' "$NS_MENU_PICK"
+    exit 0
+fi
+
+if [ -z "$input" ]; then
+    exit 128
+fi
+
+printf '%s\n' "$input" | head -n 1

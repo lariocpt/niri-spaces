@@ -22,7 +22,12 @@ EOF
 @test "load: template args substitute into @workspace, app_id and command" {
     install_stub_apps foot
     # $1 -> @workspace target, $2 -> app_id field, $3 -> command field.
+    # Seed the substituted name as an empty workspace: an absent name would
+    # take 0.4.0's create path and move by index instead (16_workspace_ops).
     export NIRI_FAKE_WIN_APPID=APPIDX
+    write_workspaces <<'EOF'
+[{"id":3,"idx":1,"name":"WSNAME","output":"eDP-1","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null}]
+EOF
     write_template tmpl <<'EOF'
 @workspace $1
 $2 | foot --a=$3 | | cap

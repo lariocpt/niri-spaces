@@ -1,0 +1,601 @@
+#!/usr/bin/env python3
+"""Show every niri workspace as a numbered chip the user can drag to reorder.
+
+The strip is a small overlay layer surface in the top-left corner of the
+screen: one chip per live workspace, labelled with the number niri displays.
+A chip takes the background and accent of the color scheme its workspace bears
+(the same schemes niri-workspace-colors assigns and the same state file it
+keeps), so a workspace keeps its color for its whole life — including when it
+is dragged. It reserves no space (exclusive zone 0); set
+workspace_strip_margin_top in settings to drop it below a bar that occupies
+the corner (default 0 sits the strip in the corner itself).
+
+Dragging chip i onto chip j performs exactly one niri action:
+
+    niri msg action move-workspace-to-index <j> --reference <i>
+
+Niri reorders the list (the other workspaces shift) and the workspace's name
+— which is its color scheme — travels with it, so the color is preserved by
+construction. A plain click focuses the workspace.
+
+  niri-workspace-strip                 run the strip (settings must enable it)
+  niri-workspace-strip --check         validate settings; no writes, no IPC
+  niri-workspace-strip status          report the live chips as plain text
+  niri-workspace-strip reorder FROM TO move the workspace at index FROM to
+                                       index TO (same action the drag issues)
+
+FROM and TO are the 1-based indexes niri displays — the same numbers the
+chips show. The daemon needs python3-gi with GTK 3 and gtk-layer-shell, and
+a Niri session (XDG_RUNTIME_DIR, NIRI_SOCKET, WAYLAND_DISPLAY).
+"""
+import argparse
+import fcntl
+import json
+import os
+import runpy
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+LOCK_NAME = "niri-workspace-strip.lock"
+COLOR_STATE_NAME = "workspace-colors.json"
+DEFAULT_HEIGHT = 30
+CHIP_WIDTH = 44  # one chip's width in logical px (the surface is n of these)
+MIN_HEIGHT = 16
+MAX_HEIGHT = 128
+DEFAULT_MARGIN_TOP = 0
+MAX_MARGIN_TOP = 512
+
+# Neutral colors for a chip whose workspace bears no scheme (a machine-theme
+# workspace). Kept deliberately close to the dark estate themes so an unnamed
+# chip reads as "no color assigned" rather than as a scheme of its own.
+PLAIN_BACKGROUND = "#1e232a"
+PLAIN_FOREGROUND = "#c9d1d9"
+PLAIN_ACCENT = "#7d8590"
+DRAG_FOREGROUND = "#0b0e12"
+
+
+def log(message):
+    print(f"workspace strip: {message}", file=sys.stderr, flush=True)
+
+
+def config_dir():
+    return Path(os.environ.get("NIRI_SPACES_DIR", Path.home() / ".config/niri-spaces"))
+
+
+def builtin_schemes():
+    """The classic palette, read from the color watcher next to this file so
+    the two tools can never drift apart. Empty when the helper is absent
+    (this file installed alone) — settings may still provide schemes.
+    run_path (not an import) because the helper has no .py extension; its
+    run_name is '<run_path>', so the helper's main() guard cannot fire."""
+    sibling = Path(__file__).resolve().parent / "niri-workspace-colors"
+    if not sibling.is_file():
+        return []
+    try:
+        module = runpy.run_path(str(sibling))
+        return [dict(s) for s in module["SCHEMES"]]
+    except (OSError, AttributeError, ValueError, ImportError):
+        return []
+
+
+def settings():
+    """(enabled, height, margin_top): the strip toggle, its pixel height and
+    the gap left below whatever already reserves the top edge (a bar's
+    exclusive zone; 0 = directly below a top bar, or the screen corner)."""
+    path = config_dir() / "settings.json"
+    config = json.loads(path.read_text()) if path.exists() else {}
+    enabled = config.get("workspace_strip", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("workspace_strip must be true or false")
+    height = config.get("workspace_strip_height", DEFAULT_HEIGHT)
+    if isinstance(height, bool) or not isinstance(height, int):
+        raise ValueError("workspace_strip_height must be an integer")
+    if not MIN_HEIGHT <= height <= MAX_HEIGHT:
+        raise ValueError(f"workspace_strip_height must be between {MIN_HEIGHT} and {MAX_HEIGHT}")
+    margin_top = config.get("workspace_strip_margin_top", DEFAULT_MARGIN_TOP)
+    if isinstance(margin_top, bool) or not isinstance(margin_top, int):
+        raise ValueError("workspace_strip_margin_top must be an integer")
+    if not 0 <= margin_top <= MAX_MARGIN_TOP:
+        raise ValueError(f"workspace_strip_margin_top must be between 0 and {MAX_MARGIN_TOP}")
+    return enabled, height, margin_top
+
+
+def normalize(scheme):
+    filled = dict(scheme)
+    for key in ("background", "ring_active", "ring_inactive", "border",
+                "shadow", "tab_active", "tab_inactive"):
+        if not filled.get(key):
+            filled[key] = filled.get("background", PLAIN_BACKGROUND)
+    return filled
+
+
+def color_schemes():
+    """scheme name -> normalized scheme dict, from settings or the builtins."""
+    path = config_dir() / "settings.json"
+    config = json.loads(path.read_text()) if path.exists() else {}
+    schemes = config.get("workspace_color_schemes", None)
+    if schemes is None:
+        schemes = builtin_schemes()
+    if not isinstance(schemes, list) or not schemes:
+        raise ValueError("no color schemes available: set workspace_color_schemes "
+                         "or keep niri-workspace-colors installed")
+    out = {}
+    for scheme in schemes:
+        if not isinstance(scheme, dict) or not scheme.get("name"):
+            raise ValueError("each scheme must be an object with a name")
+        out[str(scheme["name"])] = normalize(scheme)
+    return out
+
+
+def read_color_assignments():
+    """workspace id -> scheme name, from the color watcher's state file."""
+    path = config_dir() / COLOR_STATE_NAME
+    if not path.exists():
+        return {}
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return {str(k): v for k, v in state.get("assignments", {}).items()}
+
+
+def scheme_for(ws, assignments, schemes):
+    """The scheme a chip should render, or None for a machine-theme workspace.
+
+    The watcher's own record for this workspace id wins; a workspace that
+    merely bears a scheme name (a re-adopted one) falls back to the name.
+    """
+    ident = str(ws.get("id"))
+    name = ws.get("name")
+    managed = assignments.get(ident)
+    if managed and managed in schemes:
+        return schemes[managed]
+    if name and name in schemes:
+        return schemes[name]
+    return None
+
+
+def msg(*args):
+    return subprocess.check_output(["niri", "msg", *args], text=True, timeout=3)
+
+
+def sort_workspaces(live):
+    """niri answers in creation order; chips must follow the on-screen numbering."""
+    return sorted(live, key=lambda ws: ws.get("idx", 0))
+
+
+def workspaces(request=msg):
+    return sort_workspaces(json.loads(request("--json", "workspaces")))
+
+
+def reorder_args(src_idx, dst_idx):
+    """The exact niri action a drag performs. Raises ValueError on a no-op."""
+    if src_idx == dst_idx:
+        raise ValueError("the workspace is already at that position")
+    return ["action", "move-workspace-to-index", str(dst_idx),
+            "--reference", str(src_idx)]
+
+
+def reorder_reference(workspaces_list, src_idx):
+    """The workspace the drag must move, looked up by its displayed index."""
+    return next((ws for ws in workspaces_list if ws.get("idx") == src_idx), None)
+
+
+def cmd_status():
+    enabled, _height, _margin = settings()
+    try:
+        live = workspaces()
+    except (OSError, subprocess.SubprocessError):
+        raise SystemExit("workspace strip: niri is not reachable (NIRI_SOCKET?)")
+    schemes = color_schemes()
+    assignments = read_color_assignments()
+    print("workspace strip: enabled" if enabled
+          else "workspace strip: disabled (chips shown as the strip would draw them)")
+    for ws in live:
+        scheme = scheme_for(ws, assignments, schemes)
+        label = ws.get("name") or "(unnamed)"
+        state = scheme["name"] if scheme else "no scheme"
+        print(f"  [{ws['idx']}] {label:<16} {state}")
+
+
+def cmd_reorder(src_idx, dst_idx):
+    settings()  # validate; reorder is usable with the toggle either way
+    try:
+        live = workspaces()
+    except (OSError, subprocess.SubprocessError):
+        raise SystemExit("workspace strip: niri is not reachable (NIRI_SOCKET?)")
+    source = reorder_reference(live, src_idx)
+    if source is None:
+        raise SystemExit(f"workspace strip: no workspace at index {src_idx}")
+    if reorder_reference(live, dst_idx) is None:
+        raise SystemExit(f"workspace strip: no workspace at index {dst_idx}")
+    try:
+        args = reorder_args(src_idx, dst_idx)
+    except ValueError as error:
+        raise SystemExit(f"workspace strip: {error}")
+    msg(*args)
+    log(f"moved workspace {src_idx} to {dst_idx}")
+
+
+def daemon(height, margin_top, schemes, assignments):
+    try:
+        import gi
+    except ImportError:
+        raise SystemExit("workspace strip: python3-gi is required "
+                         "(python3-gi, gir1.2-gtk-3.0, gir1.2-gtklayershell-0.1)")
+    try:
+        gi.require_version("Gdk", "3.0")
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("GtkLayerShell", "0.1")
+        from gi.repository import GLib, Gdk, Gtk, GtkLayerShell
+    except (ValueError, ImportError) as error:
+        raise SystemExit(f"workspace strip: GTK 3 + gtk-layer-shell are required ({error})")
+
+    if not os.environ.get("WAYLAND_DISPLAY") or not os.environ.get("NIRI_SOCKET"):
+        raise SystemExit("Run inside Niri: WAYLAND_DISPLAY and NIRI_SOCKET are required")
+
+    # One strip per seat, like the color watcher: the lock file is the only
+    # thing that can tell two instances apart.
+    runtime = os.environ["XDG_RUNTIME_DIR"]
+    with open(os.path.join(runtime, LOCK_NAME), "a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log("already running; quit the old strip before starting this version")
+            return
+        lock.seek(0)
+        lock.truncate()
+        lock.write(str(os.getpid()))
+        lock.flush()
+        run_daemon(height, margin_top, schemes, assignments, GLib, Gdk, Gtk, GtkLayerShell)
+
+
+def run_daemon(height, margin_top, schemes, assignments, GLib, Gdk, Gtk, GtkLayerShell):
+    def on_term(_signum, _frame):
+        Gtk.main_quit()
+    signal.signal(signal.SIGTERM, on_term)
+
+    window = Gtk.Window()
+    window.set_title("niri-workspace-strip")
+    window.set_decorated(False)
+    # The library wants init before the window is realized (waybar's own
+    # source is explicit about this ordering), so it goes before any show.
+    GtkLayerShell.init_for_window(window)
+    GtkLayerShell.set_layer(window, GtkLayerShell.Layer.TOP)
+    GtkLayerShell.set_keyboard_mode(window, GtkLayerShell.KeyboardMode.NONE)
+    GtkLayerShell.set_namespace(window, "niri-workspace-strip")
+    # Exclusive zone 0: a pure overlay. The strip covers the corner without
+    # reserving space, so a bar underneath keeps its position. (The protocol
+    # default of -1 would instead reserve the whole anchored edge and push
+    # every other surface down.) A top margin keeps the strip clear of a bar
+    # that occupies the corner; it is 0 by default, so a lone strip sits in
+    # the top-left corner itself.
+    GtkLayerShell.set_exclusive_zone(window, 0)
+    if margin_top:
+        GtkLayerShell.set_margin(window, GtkLayerShell.Edge.TOP, margin_top)
+    window.set_can_focus(False)
+
+    # All pointer logic lives on the event box, not on the chips: a GtkButton
+    # child would swallow the press and the window would never see the drag.
+    # Labels are windowless, so every event below is delivered to this box
+    # (an input-only window) instead. The mask is set explicitly rather than
+    # relying on defaults: press/release for the click and drag, pointer
+    # motion for the drag tracking, enter/leave to end a drag the pointer
+    # escapes with.
+    area = Gtk.EventBox()
+    area.set_visible_window(False)
+    area.add_events(Gdk.EventMask.BUTTON_PRESS_MASK
+                    | Gdk.EventMask.BUTTON_RELEASE_MASK
+                    | Gdk.EventMask.POINTER_MOTION_MASK
+                    | Gdk.EventMask.ENTER_NOTIFY_MASK
+                    | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+    box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+    area.add(box)
+    window.add(area)
+    # The anchors come after the size request: gtk-layer-shell's anchor logic
+    # relies on the surface dimensions (waybar sets its position the same way).
+    window.set_size_request(-1, height)
+    # One Edge per call, three arguments each: the two-argument form that
+    # takes OR-ed edges is silently ignored by gtk-layer-shell, and an
+    # unanchored layer surface gets centered by the compositor instead of
+    # sitting in the corner.
+    GtkLayerShell.set_anchor(window, GtkLayerShell.Edge.TOP, True)
+    GtkLayerShell.set_anchor(window, GtkLayerShell.Edge.LEFT, True)
+
+    provider = Gtk.CssProvider()
+    # A provider attached to the window's own style context does not reach
+    # the label children (their contexts never consult it) — on the screen
+    # it covers the whole subtree, which is what the chip rules need.
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(), provider,
+        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def resize(width):
+        # gtk-layer-shell has no explicit set_size in this version: the
+        # library derives the layer surface size from the window's
+        # allocation and re-sends it whenever that changes. Pushing the
+        # chip row's width into the window's size request is therefore the
+        # one lever that resizes the surface — queue_resize makes the
+        # reallocation (and the library's set_size) happen right away.
+        window.set_size_request(width, height)
+        window.queue_resize()
+
+    strip = StripState(window, area, box, provider, height, schemes, assignments, Gtk, resize)
+    area.connect("button-press-event", strip.on_press)
+    area.connect("motion-notify-event", strip.on_motion)
+    area.connect("button-release-event", strip.on_release)
+    area.connect("leave-notify-event", strip.on_leave)
+
+    stream = subprocess.Popen(["niri", "msg", "--json", "event-stream"],
+                              stdout=subprocess.PIPE)
+    fd = stream.stdout.fileno()
+    os.set_blocking(fd, False)
+    strip.stream_proc = stream
+    strip.stream_fd = fd
+    # The pygobject io_add_watch override takes a GLib.IOChannel (it asserts
+    # on the type), so the non-blocking pipe fd is wrapped before watching;
+    # reads still go through the raw fd in on_stream_data. The channel does
+    # not take the fd from the pipe (close_on_unref stays off by default).
+    channel = GLib.IOChannel.unix_new(fd)
+    GLib.io_add_watch(channel, GLib.IOCondition.IN, strip.on_stream_data)
+
+    strip.refresh()  # initial snapshot + paint
+    # gtk-layer-shell creates the layer surface when the window is mapped, so
+    # the window itself must be shown — the box's own show_all in rebuild
+    # only covers the box's subtree, not the window or the event box.
+    window.show_all()
+
+    def force_commit():
+        # gtk-layer-shell waits synchronously for the compositor's initial
+        # configure while the window realizes. If that wait times out (busy
+        # compositor at session start), show_all() returns with a configured
+        # but never-presented surface: mapped, allocated, invisible. The
+        # workaround is waybar's: once control is back in the main loop,
+        # force the layer surface to commit its first buffer. (idle_add
+        # invokes its callback with no arguments.)
+        window.queue_resize()
+        window.queue_draw()
+        GtkLayerShell.try_force_commit(window)
+        return False
+
+    GLib.idle_add(force_commit)
+    window.connect(
+        "configure-event",
+        lambda _w, _e: (window.queue_draw(), GtkLayerShell.try_force_commit(window), False)[-1])
+    where = "top-left corner" if not margin_top else f"top-left, {margin_top}px below the top edge"
+    log(f"watching {height}px strip at {where}")
+    Gtk.main()
+    if stream.poll() is None:
+        stream.terminate()
+        try:
+            stream.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            stream.kill()
+        stream.wait()
+        stream.stdout.close()
+
+
+class StripState:
+    """The mutable strip: chips, the drag in flight, the event stream."""
+
+    DRAG_THRESHOLD = 5  # px of motion before a press becomes a drag
+
+    def __init__(self, window, area, box, provider, height, schemes, assignments, gtk,
+                 resize=None):
+        # The GTK namespace is a daemon-local name, so the state object holds
+        # a reference for the methods that construct or quit widgets.
+        self.gtk = gtk
+        self.window = window
+        self.area = area
+        self.box = box
+        self.provider = provider
+        self.height = height
+        self.schemes = schemes
+        self.assignments = assignments
+        self.resize = resize
+        self.snapshot = []
+        self.chips = []  # (ws, label)
+        self.drag = None
+        self.stream_proc = None
+        self.stream_fd = None
+        self.stream_buffer = ""
+
+    # -- painting ---------------------------------------------------------
+
+    def refresh(self, force=False):
+        if force or not self.snapshot:
+            self.snapshot = workspaces()
+        self.assignments = read_color_assignments()
+        self.rebuild()
+
+    def rebuild(self):
+        for _ws, chip in self.chips:
+            chip.destroy()
+        self.chips = []
+        css = ["window { background-color: " + PLAIN_BACKGROUND + "; }",
+               "label { border: none; font-size: 13px; }"]
+        for ws in self.snapshot:
+            chip = self.gtk.Label(label=str(ws["idx"]))
+            chip.set_can_focus(False)
+            # The chip box comes from the widget, not from CSS: a label's
+            # CSS min-width/padding proved unreliable here, and a fixed
+            # width is also what the surface resize below sizes against.
+            chip.set_size_request(CHIP_WIDTH, self.height)
+            chip.set_xalign(0.5)
+            chip.set_yalign(0.5)
+            self.box.pack_start(chip, False, False, 0)
+            self.chips.append((ws, chip))
+            ident = f"ws{ws['id']}"
+            chip.get_style_context().add_class(ident)
+            scheme = scheme_for(ws, self.assignments, self.schemes)
+            background = scheme["background"] if scheme else PLAIN_BACKGROUND
+            foreground = scheme["ring_active"] if scheme else PLAIN_FOREGROUND
+            css.append(f"label.{ident} {{ background-color: {background}; "
+                       f"color: {foreground}; }}")
+            if ws.get("is_focused"):
+                accent = scheme["ring_active"] if scheme else PLAIN_ACCENT
+                css.append(f"label.{ident} {{ border-bottom: 2px solid {accent}; }}")
+            if self.drag is not None and self.drag.get("hover") == ws["id"]:
+                css.append(f"label.{ident}:not(:active) {{ background-color: "
+                           f"{foreground}; color: {DRAG_FOREGROUND}; }}")
+        self.provider.load_from_data("\n".join(css).encode("utf-8"))
+        self.box.show_all()
+        if self.resize is not None:
+            # The strip's whole width is the row of chips; the layer surface
+            # has to be told, and 0 would hand sizing back to the compositor.
+            self.resize(max(1, len(self.chips)) * CHIP_WIDTH)
+
+    # -- hit testing (event coordinates, relative to the event box) -------
+
+    def chip_at(self, x, y):
+        # The box is the event box's only child at (0,0), so a label's
+        # allocation relative to the box equals event.x/event.y.
+        for ws, chip in self.chips:
+            alloc = chip.get_allocation()
+            if alloc.x <= x < alloc.x + alloc.width and alloc.y <= y < alloc.y + alloc.height:
+                return ws
+        return None
+
+    # -- pointer events ----------------------------------------------------
+
+    def on_press(self, _widget, event):
+        ws = self.chip_at(event.x, event.y)
+        if ws is None:
+            return False
+        self.drag = {"ws": ws, "x0": event.x, "y0": event.y,
+                     "moved": False, "hover": None}
+        return False
+
+    def on_motion(self, _widget, event):
+        if self.drag is None:
+            return False
+        if (abs(event.x - self.drag["x0"]) > self.DRAG_THRESHOLD
+                or abs(event.y - self.drag["y0"]) > self.DRAG_THRESHOLD):
+            self.drag["moved"] = True
+        over = self.chip_at(event.x, event.y)
+        hover = over["id"] if over is not None else None
+        if hover != self.drag["hover"]:
+            self.drag["hover"] = hover
+            self.rebuild()
+        return False
+
+    def on_release(self, _widget, event):
+        drag = self.drag
+        self.drag = None
+        if drag is None:
+            return False
+        if not drag["moved"]:
+            # A plain click focuses the workspace. A nameless one is addressed
+            # by index — niri's focus-by-name is a no-op without a bearer.
+            ws = drag["ws"]
+            name = ws.get("name")
+            msg("action", "focus-workspace", name if name else str(ws["idx"]))
+            self.refresh(force=True)
+            return False
+        if drag["hover"] is None:
+            # Released over no chip: drop the drag, keep the order.
+            self.rebuild()
+            return False
+        source = drag["ws"]
+        target = next((ws for ws in self.snapshot if ws["id"] == drag["hover"]), None)
+        if target is not None and target["idx"] != source["idx"]:
+            msg("action", "move-workspace-to-index", str(target["idx"]),
+                "--reference", str(source["idx"]))
+        self.refresh(force=True)
+        self.rebuild()
+        return False
+
+    def on_leave(self, _widget, _event):
+        # The pointer escaped the strip mid-drag: no release will ever arrive,
+        # so end the drag now rather than leaving a stuck highlight.
+        if self.drag is not None:
+            self.drag = None
+            self.rebuild()
+        return False
+
+    # -- the niri event stream ---------------------------------------------
+
+    def on_stream_data(self, _gstream, _condition):
+        data = b""
+        try:
+            while True:
+                chunk = os.read(self.stream_fd, 65536)
+                if not chunk:
+                    break
+                data += chunk
+        except BlockingIOError:
+            pass
+        except OSError:
+            log("event stream died; restart the strip")
+            self.gtk.main_quit()
+            return False
+        if not data:
+            log("niri event stream closed; restart the strip")
+            self.gtk.main_quit()
+            return False
+        self.stream_buffer += data.decode("utf-8", "replace")
+        while "\n" in self.stream_buffer:
+            line, self.stream_buffer = self.stream_buffer.split("\n", 1)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if "WorkspacesChanged" in event:
+                self.snapshot = sort_workspaces(event["WorkspacesChanged"]["workspaces"])
+                self.refresh()
+        return True
+
+
+def main():
+    parser = argparse.ArgumentParser(description="niri workspace strip: drag-to-reorder numbered chips")
+    parser.add_argument("--check", action="store_true",
+                        help="validate settings without writes or IPC")
+    parser.add_argument("command", nargs="?",
+                        choices=["status", "reorder"],
+                        help="one-shot command (otherwise: run the strip)")
+    parser.add_argument("args", nargs="*",
+                        help="for reorder: FROM TO, the displayed indexes")
+    args = parser.parse_args()
+    try:
+        enabled, height, margin_top = settings()
+    except (OSError, ValueError, TypeError) as error:
+        raise SystemExit(f"workspace strip: invalid settings: {error}") from error
+    if args.check:
+        if enabled:
+            log(f"enabled, height {height}px, top margin {margin_top}px")
+        else:
+            log("disabled (set workspace_strip true in settings.json)")
+        try:
+            import gi  # noqa: F401
+            gi.require_version("Gtk", "3.0")
+            gi.require_version("GtkLayerShell", "0.1")
+            log("gtk layer-shell: available")
+        except (ImportError, ValueError):
+            log("gtk layer-shell: MISSING — the daemon will not start "
+                "(python3-gi, gir1.2-gtk-3.0, gir1.2-gtklayershell-0.1)")
+        return
+    if not enabled and not args.command:
+        # Same pattern as the color watcher: `niri-spaces start` launches the
+        # helper regardless of the toggle, so a disabled strip ends quietly.
+        # Explicit one-shot commands (status, reorder) answer regardless —
+        # they are how a user inspects or moves workspaces by hand.
+        log("disabled (set workspace_strip true in settings.json)")
+        return
+    if args.command == "status":
+        cmd_status()
+        return
+    if args.command == "reorder":
+        if len(args.args) != 2 or not all(a.isdigit() for a in args.args):
+            raise SystemExit("usage: niri-workspace-strip reorder FROM TO")
+        cmd_reorder(int(args.args[0]), int(args.args[1]))
+        return
+    daemon(height, margin_top, color_schemes(), read_color_assignments())
+
+
+if __name__ == "__main__":
+    main()

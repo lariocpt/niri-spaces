@@ -3,15 +3,19 @@
 #
 #   niri-spaces load <name> [args...]   load spaces/<name>.space (or templates/<name>.space with $1..$9 substituted)
 #   niri-spaces start                   run every `load ...` line in ~/.config/niri-spaces/autostart
-#   niri-spaces menu                    pick a space interactively (fuzzel if available, else terminal)
+#   niri-spaces menu                    pick a space from a numbered popup list (fuzzel if available, else terminal)
 #   niri-spaces list                    list available spaces and templates
 #   niri-spaces terminal-pairs [--check] run the optional 50/50 terminal watcher
 #   niri-spaces workspace-colors [--check] run the optional per-workspace color scheme watcher
+#   niri-spaces workspace-strip [--check | status | reorder FROM TO] the optional coloured workspace strip
 #
 # Space files live in ~/.config/niri-spaces/spaces/ and templates/.
 #
 # Layout file format (.space) — parsing ported from niri-wspaces-loader:
-#   @workspace <name-or-index>
+#   @workspace <name-or-index>   a name nothing bears yet is created fresh;
+#                                an empty bearer is reused; a name that
+#                                already holds windows opens a new
+#                                "<name> 2" sibling instead
 #   <app_id> | <launch command> [| <env vars> [| <capture var>]]
 #   @action <shell command>            # may use captured window-id vars
 # Lines starting with # and blank lines are ignored.
@@ -144,12 +148,92 @@ launch_on_workspace() {
     return 1
 }
 
+# The same wait-and-diff, but the target is a name no live workspace bears yet.
+# niri never materialises a named workspace from a move or a focus — both are
+# silent no-ops when the name has no bearer (verified against 26.04). What it
+# DOES create is an unnamed slot when a window moves to an index past the end,
+# so a fresh name needs this detour: park the window one past the end, then
+# name the slot it landed in. A workspace the color watcher renames in the
+# meantime is renamed again — our name is fresh, so the rename lands.
+launch_on_new_workspace() {
+    local target_name="$1"
+    local app_id="$2"
+    shift 2
+    local cmd=("$@")
+
+    # shellcheck disable=SC2016
+    local jq_filter='.[] | select(.app_id != null) | select(.app_id | startswith($app)) | .id'
+    local pre_ids
+    pre_ids=$(niri msg --json windows | jq -r --arg app "$app_id" "$jq_filter")
+
+    setsid "${cmd[@]}" >/dev/null 2>&1 </dev/null &
+
+    for _ in {1..50}; do
+        local post_ids new_id new_idx
+        post_ids=$(niri msg --json windows | jq -r --arg app "$app_id" "$jq_filter")
+        new_id=$(comm -13 <(echo "$pre_ids" | sort) <(echo "$post_ids" | sort) | head -n 1)
+        if [ -n "$new_id" ] && [ "$new_id" != "null" ]; then
+            new_idx=$(niri msg --json workspaces | jq 'length + 1')
+            niri msg action move-window-to-workspace --window-id "$new_id" "$new_idx" >/dev/null 2>&1
+            niri msg action set-workspace-name "$target_name" --workspace "$new_idx" >/dev/null 2>&1
+            echo "$new_id"
+            return 0
+        fi
+        sleep 0.2
+    done
+    echo "warning: no new '$app_id' window appeared within 10s (window left where it opened)" >&2
+    return 1
+}
+
+# Where a named @workspace target should open, as "mode<TAB>name":
+#   reuse <name>    a live workspace bears the name (with or without windows):
+#                   the windows simply move there by name
+#   create <name>   nothing live bears the name: the first window must create
+#                   the slot (niri cannot create named workspaces on demand)
+# A live bearer that ALREADY HOLDS WINDOWS is never repopulated: the target
+# becomes "<name> 2", or the next free "<name> N" — a fresh sibling the user
+# asked for, not a surprise merge into a busy workspace.
+workspace_target_mode() {
+    local name="$1" final busy
+    busy=$(niri msg --json workspaces | jq -r --arg n "$name" '
+        [ .[] | select(.name == $n) ]
+        | if length == 0 then "absent"
+          elif (.[0].active_window_id // null) == null then "empty"
+          else "busy" end')
+    case "$busy" in
+        empty | absent)
+            final="$name"
+            ;;
+        busy)
+            local taken n=2
+            taken=$(niri msg --json workspaces | jq -r '.[] | .name // empty')
+            while :; do
+                final="$name $n"
+                grep -qxF -- "$final" <<<"$taken" || break
+                n=$((n + 1))
+            done
+            ;;
+    esac
+    # The final name may already exist as an empty bearer (a leftover from a
+    # destroyed sibling, whose name niri hands to the next workspace): then a
+    # plain move by name is the right move and no creation is needed.
+    local held
+    held=$(niri msg --json workspaces | jq -r --arg n "$final" '[.[] | select(.name == $n)] | length')
+    if [ "$held" -gt 0 ]; then
+        printf 'reuse\t%s\n' "$final"
+    else
+        printf 'create\t%s\n' "$final"
+    fi
+}
+
 # Parse and execute one .space file (already template-substituted if needed).
 run_space_file() {
     local ws_file="$1"
     local current_ws=""
     local line app_id cmd env_vars var_name win_id action_cmd
     local lineno=0
+    # Set while the next launch must CREATE its (nameless) target workspace.
+    local create_next=""
 
     while IFS= read -r line || [ -n "$line" ]; do
         lineno=$((lineno + 1))
@@ -159,6 +243,25 @@ run_space_file() {
 
         if [[ "$line" =~ ^@workspace[[:space:]]+(.*) ]]; then
             current_ws="${BASH_REMATCH[1]}"
+            if [[ "$current_ws" =~ ^[0-9]+$ ]]; then
+                # A plain index: move windows there, as always.
+                create_next=""
+            else
+                # Resolved fresh on every @workspace line: a name created by an
+                # earlier section already bears windows by the time a later
+                # section re-mentions it, and a busy name must open a sibling,
+                # not a duplicate slot.
+                local target_spec target_mode target_name
+                target_spec=$(workspace_target_mode "$current_ws")
+                IFS=$'\t' read -r target_mode target_name <<<"$target_spec"
+                current_ws="$target_name"
+                # The creation is a one-shot: the first window opens the slot
+                # and names it, every following window moves by name.
+                create_next=""
+                if [ "$target_mode" = create ]; then
+                    create_next="$target_name"
+                fi
+            fi
             echo "-> workspace: $current_ws"
             continue
         elif [[ "$line" =~ ^@action[[:space:]]+(.*) ]]; then
@@ -186,10 +289,15 @@ run_space_file() {
 
         echo "   launching $app_id: $cmd"
         win_id=""
+        local launcher="launch_on_workspace"
+        if [ -n "$create_next" ]; then
+            launcher="launch_on_new_workspace"
+            create_next=""
+        fi
         if [ -n "$env_vars" ]; then
-            win_id=$(eval "export $env_vars; launch_on_workspace \"\$current_ws\" \"\$app_id\" $cmd") || true
+            win_id=$(eval "export $env_vars; $launcher \"\$current_ws\" \"\$app_id\" $cmd") || true
         else
-            win_id=$(eval "launch_on_workspace \"\$current_ws\" \"\$app_id\" $cmd") || true
+            win_id=$(eval "$launcher \"\$current_ws\" \"\$app_id\" $cmd") || true
         fi
         if [ -n "$var_name" ] && [ -n "$win_id" ]; then
             eval "$var_name=\"$win_id\""
@@ -261,6 +369,11 @@ cmd_start() {
     if [ -x "$helper" ]; then
         niri msg action spawn -- "$helper" >/dev/null 2>&1 || return 1
     fi
+    # Same for the workspace strip.
+    helper="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/niri-workspace-strip"
+    if [ -x "$helper" ]; then
+        niri msg action spawn -- "$helper" >/dev/null 2>&1 || return 1
+    fi
     # Land on the first workspace when done.
     niri msg action focus-workspace 1 >/dev/null 2>&1 || true
 }
@@ -274,17 +387,38 @@ cmd_list() {
     return 0
 }
 
+# fuzzel returns the WHOLE line it was shown, number prefix included
+# ("3  kavia - coding"); the space to load is whatever follows it. A line
+# without a leading number is used as-is, which keeps the picker honest when
+# someone pipes something into it by hand.
+menu_pick_name() {
+    local line="$1"
+    line="${line#"${line%%[![:space:]]*}"}"
+    if [[ "$line" =~ ^[0-9]+[[:space:]]+(.*)$ ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+    else
+        printf '%s' "$line"
+    fi
+}
+
 cmd_menu() {
-    local names=() f pick
+    local names=() f pick name
     for f in "$CONFIG_DIR"/spaces/*.space; do [ -f "$f" ] && names+=("$(basename "$f" .space)"); done
     [ ${#names[@]} -gt 0 ] || { echo "No spaces defined in $CONFIG_DIR/spaces." >&2; return 1; }
     if command -v fuzzel >/dev/null 2>&1 && [ -n "${WAYLAND_DISPLAY:-}" ]; then
-        pick=$(printf '%s\n' "${names[@]}" | fuzzel --dmenu --prompt "niri-space> ") || return 0
+        # Numbered rows: typing the number narrows the list to exactly that
+        # row, so a workspace is opened by pressing its number and Enter.
+        local numbered=() i
+        for i in "${!names[@]}"; do
+            numbered+=("$(printf '%2d  %s' $((i + 1)) "${names[$i]}")")
+        done
+        pick=$(printf '%s\n' "${numbered[@]}" | fuzzel --dmenu --prompt "niri-space> ") || return 0
+        name=$(menu_pick_name "$pick")
     else
         echo "Select a space to load:"
-        select pick in "${names[@]}"; do [ -n "$pick" ] && break; done
+        select name in "${names[@]}"; do [ -n "$name" ] && break; done
     fi
-    [ -n "$pick" ] && cmd_load "$pick"
+    [ -n "$name" ] && cmd_load "$name"
 }
 
 # Dispatch is the program's entry point, so it is the one thing a sourcing shell must
@@ -303,9 +437,13 @@ if [ "$ns_sourced" -eq 0 ]; then
             shift
             exec "$(dirname "$(readlink -f "$0")")/niri-workspace-colors" "$@"
             ;;
+        workspace-strip)
+            shift
+            exec "$(dirname "$(readlink -f "$0")")/niri-workspace-strip" "$@"
+            ;;
         menu)  cmd_menu ;;
         # -h/--help/"" never reach here: answered above the dependency preflight, so
         # help does not require the tools it is there to tell you about.
-        *) echo "unknown subcommand: $1 (try: load, start, menu, list, terminal-pairs, workspace-colors)" >&2; exit 1 ;;
+        *) echo "unknown subcommand: $1 (try: load, start, menu, list, terminal-pairs, workspace-colors, workspace-strip)" >&2; exit 1 ;;
     esac
 fi
