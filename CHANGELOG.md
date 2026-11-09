@@ -9,6 +9,31 @@ The `## [X.Y.Z]` heading shape is load-bearing, not a style choice:
 next to use as the GitHub Release notes, and refuses to publish a tag that has no
 section here. The tag being released must match the heading it releases.
 
+## [0.4.1] - 2026-11-09
+
+### Added
+- The sixteen-scheme colour pool from the 0.3.1 line: eight extra schemes
+  (`crimson`, `cappuccino`, `lime`, `spring`, `indigo`, `violet`, `fuchsia`,
+  `silver`) placed in the hue gaps between the eight classics. A new
+  workspace still draws a free classic first and overflows into the extras
+  only when all eight classics are already held, so a machine with more
+  managed workspaces than classic schemes never runs out of distinct
+  colours.
+
+### Fixed
+- A new workspace created while every classic scheme was already held
+  received a rename that niri silently ignores and ended up on the machine
+  theme next to an identically coloured neighbour (two reds side by side).
+  It now receives a distinguishable extra scheme — the 0.3.1 fix, carried
+  onto this line.
+- The fake-niri test stub's jq expressions are portable to jq 1.7, so the
+  test suite runs on distros that still ship the older parser.
+
+### Notes
+- First cut from the merged main: the first release combining the 0.4.0
+  workspace ops and coloured strip with the 0.3.1 colour pool. Hosts pinned
+  to 0.3.x can still take 0.3.1 alone; the installer is unchanged from 0.4.0.
+
 ## [0.4.0] - 2026-11-09
 
 ### Added
