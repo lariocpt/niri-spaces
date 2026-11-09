@@ -62,8 +62,11 @@ fi
 if [ "${1:-}" = "action" ] && [ "${2:-}" = "new-workspace" ]; then
     printf 'niri msg %s\n' "$*" >>"$actions"
     if [ -n "${NIRI_FAKE_WORKSPACES:-}" ]; then
-        jq '((map(.id) | max) // 0) + 1 as $id
-            | ((map(.idx) | max) // 0) + 1 as $idx
+        # NB: the bound expression must be parenthesised — jq 1.7 parses
+        # `X + 1 as $id | …' as `X + (1 as $id | …)', which errors, while jq
+        # 1.8 binds the sum. Parens parse identically on both.
+        jq '(((map(.id) | max) // 0) + 1) as $id
+            | (((map(.idx) | max) // 0) + 1) as $idx
             | . + [{id: $id, idx: $idx, name: null, output: "eDP-1",
                     is_urgent: false, is_active: false, is_focused: false,
                     active_window_id: null}]' \
@@ -105,7 +108,7 @@ if [ "${1:-}" = "action" ] && [ "${2:-}" = "move-window-to-workspace" ]; then
     if [ -n "${NIRI_FAKE_WORKSPACES:-}" ]; then
         count=$(jq 'length' "${NIRI_FAKE_WORKSPACES:-/dev/null}" 2>/dev/null || echo 0)
         if [[ "$target" =~ ^[0-9]+$ ]] && [ "$target" -gt "$count" ]; then
-            jq '((map(.id) | max) // 0) + 1 as $id
+            jq '(((map(.id) | max) // 0) + 1) as $id
                 | . + [{id: $id, idx: '"$target"', name: null, output: "eDP-1",
                         is_urgent: false, is_active: false, is_focused: false,
                         active_window_id: null}]' \
