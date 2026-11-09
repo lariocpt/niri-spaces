@@ -76,6 +76,25 @@ if [ "${1:-}" = "action" ] && [ "${2:-}" = "new-workspace" ]; then
     exit 0
 fi
 
+# `msg --json outputs` -> the monitor list. A read-only query like windows:
+# served from $NIRI_FAKE_OUTPUTS when the test writes one, empty otherwise,
+# and never logged (the actions log holds only real actions).
+if [ "${1:-}" = "--json" ] && [ "${2:-}" = "outputs" ]; then
+    if [ -n "${NIRI_FAKE_OUTPUTS:-}" ] && [ -s "$NIRI_FAKE_OUTPUTS" ]; then
+        cat "$NIRI_FAKE_OUTPUTS"
+    else
+        printf '[]\n'
+    fi
+    exit 0
+fi
+
+# `msg --json event-stream` -> no events and immediate EOF: the daemons read
+# the empty stream as "compositor gone" and take their exit path, which is
+# exactly what the session-snapshot specs want to drive. Not logged.
+if [ "${1:-}" = "--json" ] && [ "${2:-}" = "event-stream" ]; then
+    exit 0
+fi
+
 # `msg workspaces` -> the readiness probe. Succeed, do not pollute the log.
 if [ "${1:-}" = "workspaces" ]; then
     exit 0

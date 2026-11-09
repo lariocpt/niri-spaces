@@ -30,7 +30,7 @@ setup() {
     # with "stdout: write error"), which the pages workflow already learned the hard
     # way under `set -o pipefail`.
     members=$(tar -tzf "$tarball")
-    for m in niri-spaces space-splash niri-terminal-pairs niri-workspace-colors niri-workspace-strip settings.json autostart LICENSE README.md install.sh; do
+    for m in niri-spaces space-splash niri-terminal-pairs niri-workspace-colors niri-workspace-strip niri-session-snapshot settings.json autostart LICENSE README.md install.sh; do
         case $'\n'"$members"$'\n' in
             *$'\n'"niri-spaces-0.0.0/$m"$'\n'*) ;;
             *) echo "the artifact has no niri-spaces-0.0.0/$m" >&2; return 1 ;;

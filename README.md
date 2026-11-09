@@ -101,13 +101,16 @@ niri-spaces list                    list available spaces and templates
 niri-spaces terminal-pairs [--check] run the optional 50/50 terminal watcher
 niri-spaces workspace-colors [--check] run the optional per-workspace color scheme watcher
 niri-spaces workspace-strip [--check | status | reorder FROM TO] the optional coloured workspace strip
+niri-spaces session [--check | status | restore [--dry-run]] the optional session snapshot & restore
 ```
 
 The optional `terminal-pairs` subcommand runs the terminal watcher. The optional
 `workspace-colors` subcommand runs the color scheme watcher (or its one-shot
 `status`, `recolor` and `clear` forms — see below). The optional `workspace-strip`
 subcommand runs the coloured workspace strip (or its one-shot `status` and
-`reorder FROM TO` forms — see below). `start` runs each `load` line in
+`reorder FROM TO` forms — see below). The optional `session` subcommand runs the
+session snapshot daemon (or its one-shot `status` and `restore` forms — see
+below). `start` runs each `load` line in
 `autostart` in order, launches the enabled watchers, and finishes by focusing workspace 1.
 
 ## The `.space` format
@@ -286,6 +289,38 @@ running niri session (`WAYLAND_DISPLAY`, `NIRI_SOCKET`, `XDG_RUNTIME_DIR`). It
 takes a per-session lock so two strips never stack, and exits when the Wayland
 display goes away. To remove the feature, set `workspace_strip` to false and log
 out and back in.
+
+## Optional session snapshot & restore
+
+In `~/.config/niri-spaces/settings.json`, set `"session_snapshot": true` to
+enable it, or `false` to disable it (the default). `niri-spaces start` launches
+the daemon after the layouts load; with the feature off it ends quietly, so it
+is safe to keep it in autostart. `session_snapshot_debounce` (1–60 seconds,
+default 2) is how long the daemon settles after the last window event before it
+writes.
+
+The daemon watches niri's event stream and keeps a snapshot of every workspace
+and window in `~/.local/state/niri-spaces/session.json` (mode 0600 — window
+titles can be sensitive). Each window records its workspace, column, width and
+floating state, plus a normalised relaunch command derived from the live
+process: browsers get one launch per instance with their profile (they restore
+their own tabs), VS Code gets a single `code` launch for the same reason, foot
+windows get their real working directory and the exact `micro` or `yazi`
+command if one was running, and Slack, Sublime and Gram get plain relaunches.
+Apps without a rule are recorded as skipped and reported by
+`niri-spaces session status` — never guessed at.
+
+Add a `restore` line to `~/.config/niri-spaces/autostart` and every login
+replays the snapshot: workspaces are recreated by name (so their colour schemes
+travel with them), windows are launched and moved onto them, and column order,
+widths and floating state are replayed with the same actions you would type.
+`niri-spaces session restore --dry-run` prints that plan without touching
+anything. Two honest limits: geometry replay is best-effort, and an *empty*
+named workspace cannot be recreated — niri creates a workspace only when a
+window arrives.
+
+The daemon takes a per-session lock so two never stack, saves one final snapshot
+when the compositor goes away, and needs only the Python standard library.
 
 ## `space-splash`
 

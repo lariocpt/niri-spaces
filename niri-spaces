@@ -8,6 +8,7 @@
 #   niri-spaces terminal-pairs [--check] run the optional 50/50 terminal watcher
 #   niri-spaces workspace-colors [--check] run the optional per-workspace color scheme watcher
 #   niri-spaces workspace-strip [--check | status | reorder FROM TO] the optional coloured workspace strip
+#   niri-spaces session [--check | status | restore [--dry-run]] the optional session snapshot & restore
 #
 # Space files live in ~/.config/niri-spaces/spaces/ and templates/.
 #
@@ -352,6 +353,11 @@ cmd_start() {
         if [[ "$line" =~ ^load[[:space:]]+(.*) ]]; then
             # shellcheck disable=SC2086
             cmd_load ${BASH_REMATCH[1]}
+        elif [ "$line" = "restore" ]; then
+            # Replay the saved session (no-op, quietly, when none was saved).
+            # A failure here must not abort the rest of autostart.
+            "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/niri-session-snapshot" restore \
+                || echo "warning: session restore failed" >&2
         else
             echo "warning: unrecognized autostart line: $line" >&2
         fi
@@ -371,6 +377,12 @@ cmd_start() {
     fi
     # Same for the workspace strip.
     helper="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/niri-workspace-strip"
+    if [ -x "$helper" ]; then
+        niri msg action spawn -- "$helper" >/dev/null 2>&1 || return 1
+    fi
+    # Same for the session snapshot daemon: it reads settings.json itself and
+    # exits quietly when the feature is off.
+    helper="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/niri-session-snapshot"
     if [ -x "$helper" ]; then
         niri msg action spawn -- "$helper" >/dev/null 2>&1 || return 1
     fi
@@ -441,9 +453,13 @@ if [ "$ns_sourced" -eq 0 ]; then
             shift
             exec "$(dirname "$(readlink -f "$0")")/niri-workspace-strip" "$@"
             ;;
+        session)
+            shift
+            exec "$(dirname "$(readlink -f "$0")")/niri-session-snapshot" "$@"
+            ;;
         menu)  cmd_menu ;;
         # -h/--help/"" never reach here: answered above the dependency preflight, so
         # help does not require the tools it is there to tell you about.
-        *) echo "unknown subcommand: $1 (try: load, start, menu, list, terminal-pairs, workspace-colors, workspace-strip)" >&2; exit 1 ;;
+        *) echo "unknown subcommand: $1 (try: load, start, menu, list, terminal-pairs, workspace-colors, workspace-strip, session)" >&2; exit 1 ;;
     esac
 fi

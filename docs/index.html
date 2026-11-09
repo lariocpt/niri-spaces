@@ -129,6 +129,7 @@
     <li><a href="#format">.space format</a></li>
     <li><a href="#example">Example</a></li>
     <li><a href="#strip">Workspace strip</a></li>
+    <li><a href="#session">Session restore</a></li>
     <li><a href="#menu">Numbered menu</a></li>
     <li><a href="#requirements">Requirements</a></li>
   </ul>
@@ -169,6 +170,7 @@
   niri-spaces terminal-pairs [--check] run the optional 50/50 terminal watcher
   niri-spaces workspace-colors [--check] run the optional per-workspace color scheme watcher
   niri-spaces workspace-strip [--check | status | reorder FROM TO] the optional coloured workspace strip
+  niri-spaces session [--check | status | restore [--dry-run]] the optional session snapshot &amp; restore
 
 Space files live in ~/.config/niri-spaces/spaces/ and templates/.
 
@@ -234,6 +236,25 @@ $BROWSER_APPID | $BROWSER | | browser_id
     </div>
     <p>The same move is available headless — <code>niri-spaces workspace-strip reorder FROM TO</code> issues exactly the drag's niri action, and <code>workspace-strip status</code> prints the strip's current order in the terminal.</p>
     <div class="note">The strip is a separate helper (<code>niri-workspace-strip</code>, Python 3 + GTK 3 via <code>gtk-layer-shell</code>). It is optional, off by default, and started by <code>niri-spaces start</code>; <code>niri-spaces workspace-strip --check</code> reports the toggle and whether the GTK bindings are importable without touching a running compositor.</div>
+  </section>
+
+  <section id="session">
+    <h2>Session snapshot &amp; restore <span class="h">reboot, get your desktop back</span></h2>
+    <p>Turn <code>session_snapshot</code> on in settings.json and a small daemon watches the compositor's event stream, keeping a private snapshot (<code>~/.local/state/niri-spaces/session.json</code>, mode 0600) of every workspace and window: which workspace held what, each window's column, width and floating state, and a normalised relaunch command per app. Add a <code>restore</code> line to your autostart and logging in after a reboot replays the session — workspaces are recreated by name, so their colours travel with them.</p>
+    <div class="table-scroll" tabindex="0">
+    <table>
+      <thead><tr><th>App</th><th>What comes back</th></tr></thead>
+      <tbody>
+        <tr><td>Chrome / Brave</td><td>One launch per browser instance with its profile; the browser restores its own tabs and windows into them.</td></tr>
+        <tr><td>VS Code</td><td>A single <code>code</code> launch — VS Code restores its own windows and workspaces.</td></tr>
+        <tr><td>foot terminals</td><td>The real working directory, the colour scheme's flags, and the exact <code>micro</code> or <code>yazi</code> command if one was running.</td></tr>
+        <tr><td>Slack, Sublime, Gram</td><td>Plain relaunch onto their named workspaces.</td></tr>
+        <tr><td>Anything else</td><td>Recorded as skipped and reported by <code>session status</code> — never guessed at.</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p><code>niri-spaces session status</code> shows what the snapshot holds; <code>session restore --dry-run</code> prints the relaunch plan without touching anything. Column order, widths and floating positions are replayed with the same actions you would type, so geometry is best-effort; the one honest loss is an empty named workspace — niri creates a workspace only when a window arrives.</p>
+    <div class="note">The daemon (<code>niri-session-snapshot</code>, Python 3) is optional, off by default, and started by <code>niri-spaces start</code>. <code>session_snapshot_debounce</code> (1–60 s, default 2) sets how long it settles after the last window event before writing.</div>
   </section>
 
   <section id="menu">

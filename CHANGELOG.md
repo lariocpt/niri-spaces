@@ -9,6 +9,39 @@ The `## [X.Y.Z]` heading shape is load-bearing, not a style choice:
 next to use as the GitHub Release notes, and refuses to publish a tag that has no
 section here. The tag being released must match the heading it releases.
 
+## [0.5.0] - 2026-11-09
+
+### Added
+- Session snapshot & restore. Set `session_snapshot: true` in settings.json
+  and a new daemon (`niri-session-snapshot`) watches the compositor's event
+  stream and keeps a private snapshot (mode 0600) of every workspace and
+  window in `~/.local/state/niri-spaces/session.json`: which workspace held
+  what, each window's column, width and floating state, and a normalised
+  relaunch command per app. Browsers and VS Code restore their own contents,
+  so they get one launch per instance; foot windows come back at their real
+  working directory with the exact `micro` or `yazi` command if one was
+  running; Slack, Sublime and Gram get plain relaunches onto their named
+  workspaces. Apps without a rule are recorded as skipped and reported,
+  never guessed at.
+- `niri-spaces session [--check | status | restore [--dry-run]]`: validate
+  the settings, show what the snapshot holds, and replay it — with `--dry-run`
+  printing the relaunch plan without touching anything.
+- The autostart file gains a `restore` line: add it and every login replays
+  the saved session. Workspaces are recreated by name, so their colour
+  schemes travel with them; a missing or unreadable snapshot is a quiet
+  no-op, and a failed restore warns without aborting the rest of autostart.
+- `session_snapshot_debounce` (1–60 seconds, default 2) sets how long the
+  daemon settles after the last window event before writing.
+
+### Notes
+- Geometry replay (column order, widths, stacking, floating) reissues the
+  same actions a user would type, so it is best-effort. The one honest loss:
+  an *empty* named workspace cannot be recreated — niri creates a workspace
+  only when a window arrives.
+- The daemon needs only the Python standard library, takes a per-session
+  lock so two never stack, and saves one final snapshot when the compositor
+  goes away.
+
 ## [0.4.1] - 2026-11-09
 
 ### Added

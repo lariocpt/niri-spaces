@@ -8,7 +8,7 @@
 # pinned --tag), downloads the archive and the .sha256 beside it, verifies the
 # checksum, and only then installs:
 #
-#   niri-spaces, space-splash, niri-terminal-pairs, niri-workspace-colors, niri-workspace-strip ->  $PREFIX/bin          (default ~/.local/bin)
+#   niri-spaces, space-splash, niri-terminal-pairs, niri-workspace-colors, niri-workspace-strip, niri-session-snapshot ->  $PREFIX/bin          (default ~/.local/bin)
 #   settings.json, autostart, spaces/*.space ->  ~/.config/niri-spaces/
 #
 # Config files are copied only where they do not already exist: a file you have
@@ -25,6 +25,7 @@
 #       niri-terminal-pairs    the terminal pairing daemon
 #       niri-workspace-colors  the workspace color watcher
 #       niri-workspace-strip   the draggable workspace strip
+#       niri-session-snapshot  the session snapshot & restore daemon
 #       settings.json          the default configuration
 #       autostart      the default autostart file
 #       spaces/        the *.space layouts
@@ -341,6 +342,9 @@ ns_plan() {
     if [ -f "$NS_ROOT/niri-workspace-strip" ]; then
         ns_say "    $NS_PREFIX/bin/niri-workspace-strip"
     fi
+    if [ -f "$NS_ROOT/niri-session-snapshot" ]; then
+        ns_say "    $NS_PREFIX/bin/niri-session-snapshot"
+    fi
     ns_say "  config (under $NS_CFG; existing files are kept):"
     ns_plan_file "$NS_ROOT/autostart" "$NS_CFG/autostart"
     for f in "$NS_ROOT"/spaces/*.space; do
@@ -444,6 +448,10 @@ main() {
     # Same for releases before the draggable workspace strip shipped.
     if [ -f "$NS_ROOT/niri-workspace-strip" ]; then
         ns_install_bin "$NS_ROOT/niri-workspace-strip" "$NS_PREFIX/bin/niri-workspace-strip"
+    fi
+    # Same for releases before session snapshot & restore shipped.
+    if [ -f "$NS_ROOT/niri-session-snapshot" ]; then
+        ns_install_bin "$NS_ROOT/niri-session-snapshot" "$NS_PREFIX/bin/niri-session-snapshot"
     fi
 
     mkdir -p "$NS_CFG/spaces" "$NS_CFG/templates" || ns_die "cannot create $NS_CFG"

@@ -61,7 +61,7 @@ jobs:
           # space-splash and the site tooling are Python 3, not shell, so shellcheck
           # cannot read them. Byte-compiling each catches a syntax error a reviewer
           # would otherwise only hit by running the splash or the docs gate.
-          python3 -m py_compile space-splash niri-terminal-pairs niri-workspace-colors niri-workspace-strip
+          python3 -m py_compile space-splash niri-terminal-pairs niri-workspace-colors niri-workspace-strip niri-session-snapshot
           python3 -m py_compile tools/gen-showcase.py tools/check-site.py
 
   # Gate 2: the behavioural suite. It is the only thing that says a space still

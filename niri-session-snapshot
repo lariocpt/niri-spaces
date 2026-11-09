@@ -1,0 +1,607 @@
+#!/usr/bin/env python3
+"""Save and restore the live niri session across restarts.
+
+The daemon watches niri's event stream and keeps a JSON snapshot of every
+workspace and window in $XDG_STATE_HOME/niri-spaces/session.json (mode 0600:
+window titles can be sensitive). Each window records a normalized relaunch
+command derived from the live process: browsers and VS Code restore their own
+contents, so they get one launch per instance; terminals get their real
+working directory and, when running micro or yazi, the exact command. Apps
+without a rule are recorded as skipped, never guessed.
+
+  niri-session-snapshot                     run the daemon (settings must enable it)
+  niri-session-snapshot --check             validate settings and snapshot; no IPC
+  niri-session-snapshot status              report the stored snapshot
+  niri-session-snapshot restore [--dry-run] replay the snapshot into the session
+
+Restore is best-effort by design: niri has no state-load API, so the replay
+recreates workspaces by name (colours travel with names) and re-places
+columns, widths and stacking with the same actions a user would type.
+Empty named workspaces cannot be recreated — niri creates a workspace only
+when a window arrives — so they are the one honest loss.
+"""
+import argparse
+import fcntl
+import json
+import os
+import select
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+LOCK_NAME = "niri-session-snapshot.lock"
+SNAPSHOT_NAME = "session.json"
+VERSION = 1
+DEFAULT_DEBOUNCE = 2
+MIN_DEBOUNCE = 1
+MAX_DEBOUNCE = 60
+
+# Events that can change what the snapshot holds. Focus-only changes are
+# included because the focused workspace is part of the session.
+WATCHED_EVENTS = {
+    "WorkspacesChanged", "WindowsChanged", "WindowOpenedOrChanged",
+    "WindowClosed", "WindowTitleChanged", "WorkspaceActivated",
+    "WorkspaceActiveWindowChanged",
+}
+
+# Shells that mean "the interesting process is one level deeper".
+SHELLS = {"sh", "bash", "zsh", "fish", "dash"}
+# TUIs relaunched inside their terminal window.
+TUIS = {"micro", "yazi"}
+
+BROWSER_APP_IDS = {"google-chrome", "google-chrome-stable", "brave-origin"}
+
+
+def log(message):
+    print(f"session snapshot: {message}", file=sys.stderr, flush=True)
+
+
+def config_dir():
+    return Path(os.environ.get("NIRI_SPACES_DIR", Path.home() / ".config/niri-spaces"))
+
+
+def state_dir():
+    return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "niri-spaces"
+
+
+def snapshot_path():
+    return state_dir() / SNAPSHOT_NAME
+
+
+def settings():
+    """(enabled, debounce_seconds) from settings.json, with hard validation."""
+    path = config_dir() / "settings.json"
+    config = json.loads(path.read_text()) if path.exists() else {}
+    enabled = config.get("session_snapshot", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("session_snapshot must be true or false")
+    debounce = config.get("session_snapshot_debounce", DEFAULT_DEBOUNCE)
+    if isinstance(debounce, bool) or not isinstance(debounce, int) \
+            or not MIN_DEBOUNCE <= debounce <= MAX_DEBOUNCE:
+        raise ValueError(f"session_snapshot_debounce must be an integer {MIN_DEBOUNCE}-{MAX_DEBOUNCE}")
+    return enabled, debounce
+
+
+def msg(*args):
+    """`niri msg --json <args>` parsed, or None when the request fails."""
+    run = subprocess.run(["niri", "msg", "--json", *args],
+                         capture_output=True, text=True)
+    if run.returncode != 0:
+        return None
+    try:
+        return json.loads(run.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def action(*args):
+    subprocess.run(["niri", "msg", "action", *args],
+                   capture_output=True, text=True)
+
+
+class Proc:
+    """Read-only view of /proc, rooted at $NS_PROC_ROOT so tests can fake it."""
+
+    def __init__(self, root=None):
+        self.root = Path(root or os.environ.get("NS_PROC_ROOT", "/proc"))
+
+    def cmdline(self, pid):
+        try:
+            raw = (self.root / str(pid) / "cmdline").read_bytes()
+        except OSError:
+            return None
+        parts = raw.split(b"\0")
+        parts = [p.decode("utf-8", "replace") for p in parts if p]
+        return parts or None
+
+    def cwd(self, pid):
+        try:
+            return os.readlink(self.root / str(pid) / "cwd")
+        except OSError:
+            return None
+
+    def children(self, pid):
+        try:
+            text = (self.root / str(pid) / "task" / str(pid) / "children").read_text()
+        except OSError:
+            return []
+        return [int(p) for p in text.split()]
+
+    def comm(self, pid):
+        try:
+            return (self.root / str(pid) / "comm").read_text().strip()
+        except OSError:
+            return None
+
+
+def browser_command(app_id, pid, proc):
+    """One relaunch per browser instance: binary + wayland + new window + profile.
+
+    Chromium cmdlines carry dozens of internal flags; only the profile choice
+    and any plain URL arguments are worth replaying. A dead pid (X11 windows
+    can report one that already exited) falls back to the default profile.
+    """
+    binary = "google-chrome" if app_id == "google-chrome-stable" else app_id
+    argv = proc.cmdline(pid) if pid is not None else None
+    if argv and argv[0]:
+        binary = argv[0]
+    cmd = [binary, "--ozone-platform=wayland", "--new-window"]
+    if argv:
+        profile = None
+        urls = []
+        for i, arg in enumerate(argv[1:], start=1):
+            if arg == "--profile-directory" and i + 1 < len(argv):
+                profile = argv[i + 1]
+            elif arg.startswith("--profile-directory="):
+                profile = arg.split("=", 1)[1]
+            elif arg.startswith(("http://", "https://")):
+                urls.append(arg)
+        if profile:
+            cmd.append(f"--profile-directory={profile}")
+        cmd.extend(urls)
+    return cmd
+
+
+def vscode_folder(title):
+    """The folder/workspace name VS Code shows in the window title, if any."""
+    if not title:
+        return None
+    tail = " - Visual Studio Code"
+    if not title.endswith(tail):
+        return None
+    rest = title[: -len(tail)]
+    parts = rest.split(" - ")
+    if not parts or not parts[0]:
+        return None
+    # "file - folder - Visual Studio Code" or "file - name (Workspace) - ..."
+    # or plain "folder - Visual Studio Code".
+    name = parts[-1] if len(parts) > 1 else parts[0]
+    if name == "":
+        return None
+    return name.replace(" (Workspace)", "")
+
+
+def terminal_command(window, proc):
+    """Rebuild a foot window: original flags, its app id, its cwd, its TUI.
+
+    `foot -e micro file` runs the TUI as the direct child; a plain shell may
+    have started micro or yazi one level deeper. Anything else under the
+    shell restores as a shell at that cwd — unknown TUIs are never guessed.
+    """
+    pid = window.get("pid")
+    if pid is None:
+        return None
+    argv = proc.cmdline(pid)
+    if not argv or not os.path.basename(argv[0]).startswith("foot"):
+        return None
+    cmd = [argv[0]]
+    # Keep the -o overrides (Color Terminal's palette) and any other flags;
+    # --app-id and --working-directory are re-derived from live state below,
+    # and anything from -e/-- on is the command line, rebuilt from the child tree.
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-e", "--"):
+            break
+        if arg == "-o" and i + 1 < len(argv):
+            cmd.extend(["-o", argv[i + 1]])
+            i += 2
+            continue
+        if arg.startswith("-o") and len(arg) > 2:
+            cmd.extend(["-o", arg[2:]])
+            i += 1
+            continue
+        if arg.startswith(("--app-id", "--working-directory")):
+            i += 1
+            continue
+        if arg.startswith("-"):
+            cmd.append(arg)
+            i += 1
+            continue
+        break
+    app_id = window.get("app_id")
+    if app_id:
+        cmd.append(f"--app-id={app_id}")
+
+    tui = None
+    cwd = None
+    for child in proc.children(pid):
+        comm = proc.comm(child)
+        if comm in TUIS:
+            tui = proc.cmdline(child)
+            cwd = cwd or proc.cwd(child)
+            break
+        if comm in SHELLS:
+            cwd = proc.cwd(child) or cwd
+            for grand in proc.children(child):
+                if proc.comm(grand) in TUIS:
+                    tui = proc.cmdline(grand)
+                    break
+            break
+    if cwd is None:
+        cwd = proc.cwd(pid)
+    if cwd:
+        cmd.append(f"--working-directory={cwd}")
+    if tui:
+        cmd.append("-e")
+        cmd.extend(tui)
+    return cmd
+
+
+def gram_command(title, projects_root):
+    """gram shows only the folder NAME; resolve it under ~/Projects/*/<name>."""
+    name = (title or "").strip()
+    if name:
+        matches = [p for p in projects_root.glob(f"*/{name}") if p.is_dir()] \
+            if projects_root.is_dir() else []
+        if len(matches) == 1:
+            return ["gram", "-n", str(matches[0])]
+    return ["gram"]
+
+
+def rule_for(window, proc, paths=None):
+    """(rule, command, group, skip_reason) for one live window."""
+    paths = paths or {}
+    app_id = window.get("app_id")
+    pid = window.get("pid")
+    title = window.get("title")
+    if not app_id:
+        return "skip", None, None, "window has no app_id"
+    if app_id in BROWSER_APP_IDS:
+        return "browser", browser_command(app_id, pid, proc), f"browser:{pid}", None
+    if app_id.startswith(("chrome-", "brave-")):
+        return "skip", None, None, f"PWA-style window {app_id} is not restorable"
+    if app_id == "com.microsoft.VSCode":
+        return "vscode", ["code"], "vscode", None
+    if app_id in ("Slack", "slack"):
+        helper = Path.home() / ".local/bin/work-slack"
+        return "slack", [str(helper) if helper.exists() else "slack"], None, None
+    if app_id == "sublime_text":
+        return "sublime", ["sublime_text"], None, None
+    if app_id == "app.liten.Gram":
+        root = paths.get("projects_root") or (Path.home() / "Projects")
+        return "gram", gram_command(title, root), None, None
+    term = terminal_command(window, proc)
+    if term is not None:
+        return "terminal", term, None, None
+    return "skip", None, None, f"no restore rule for {app_id}"
+
+
+def build_snapshot(workspaces, windows, outputs, proc, paths=None):
+    """The snapshot document: workspaces in display order, windows with rules."""
+    proc = proc or Proc()
+    paths = paths or {}
+    ws_by_id = {w["id"]: dict(w, windows=[]) for w in sorted(workspaces, key=lambda w: w["idx"])}
+    output_widths = {o.get("name"): o.get("width") for o in (outputs or [])}
+    for win in windows:
+        target = ws_by_id.get(win.get("workspace_id"))
+        if target is None:
+            continue  # window on no workspace (overview scratch): nothing to place
+        rule, command, group, reason = rule_for(win, proc, paths)
+        layout = win.get("layout") or {}
+        pos = layout.get("pos_in_scrolling_layout")
+        width_fraction = None
+        if pos and layout.get("tile_size"):
+            out_w = output_widths.get(target.get("output"))
+            tile_w = layout["tile_size"][0]
+            if out_w:
+                width_fraction = round(min(max(tile_w / out_w, 0.05), 1.0), 3)
+        target["windows"].append({
+            "app_id": win.get("app_id"),
+            "title": win.get("title"),
+            "rule": rule,
+            "command": command,
+            "group": group,
+            "column": pos[0] if pos else None,
+            "tile": pos[1] if pos else None,
+            "width": width_fraction,
+            "floating": bool(win.get("is_floating")),
+            "skip_reason": reason,
+        })
+    focused = next((w["id"] for w in ws_by_id.values() if w.get("is_focused")), None)
+    return {
+        "version": VERSION,
+        "saved": int(time.time()),
+        "focused": focused,
+        "workspaces": [
+            {"idx": w["idx"], "name": w.get("name"), "output": w.get("output"),
+             "focused": bool(w.get("is_focused")), "windows": w["windows"]}
+            for w in ws_by_id.values()
+        ],
+    }
+
+
+def write_snapshot(document):
+    directory = state_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    os.chmod(directory, 0o700)
+    final = snapshot_path()
+    tmp = final.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(document, indent=1) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, final)
+
+
+def capture_snapshot():
+    workspaces = msg("workspaces")
+    windows = msg("windows")
+    outputs = msg("outputs")
+    if workspaces is None or windows is None:
+        return None
+    return build_snapshot(workspaces, windows, outputs or [], Proc())
+
+
+def daemon(debounce):
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime or not os.environ.get("NIRI_SOCKET"):
+        raise SystemExit("Run inside Niri: XDG_RUNTIME_DIR and NIRI_SOCKET are required")
+    with open(os.path.join(runtime, LOCK_NAME), "a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log("already running; quit the old helper before starting this version")
+            return
+        lock.seek(0)
+        lock.truncate()
+        lock.write(str(os.getpid()))
+        lock.flush()
+
+        stream = subprocess.Popen(["niri", "msg", "--json", "event-stream"],
+                                  stdout=subprocess.PIPE, text=True)
+        log(f"watching the session (debounce {debounce}s)")
+        deadline = None
+        try:
+            while True:
+                timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+                ready, _, _ = select.select([stream.stdout], [], [], timeout)
+                if ready:
+                    line = stream.stdout.readline()
+                    if line == "":
+                        break  # compositor gone: the last flush below is the logout save
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    # niri events are externally tagged: {"WindowsChanged": {...}}.
+                    if any(key in event for key in WATCHED_EVENTS):
+                        deadline = time.monotonic() + debounce
+                if deadline is not None and time.monotonic() >= deadline:
+                    deadline = None
+                    document = capture_snapshot()
+                    if document is not None:
+                        write_snapshot(document)
+        finally:
+            document = capture_snapshot()
+            if document is not None:
+                write_snapshot(document)
+                log("snapshot saved on exit")
+            if stream.poll() is None:
+                stream.terminate()
+            try:
+                stream.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                stream.kill()
+                stream.wait()
+            stream.stdout.close()
+
+
+def status():
+    path = snapshot_path()
+    if not path.exists():
+        print("session: no snapshot yet")
+        return 0
+    try:
+        document = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"session: snapshot unreadable ({error})")
+        return 1
+    age = max(0, int(time.time()) - document.get("saved", 0))
+    print(f"session: snapshot {age}s old, {len(document.get('workspaces', []))} workspaces")
+    for ws in document.get("workspaces", []):
+        restorable = [w for w in ws["windows"] if not w["skip_reason"]]
+        skipped = [w for w in ws["windows"] if w["skip_reason"]]
+        label = ws["name"] or "(unnamed)"
+        print(f"  [{ws['idx']}] {label}: {len(restorable)} restorable, {len(skipped)} skipped")
+        for win in skipped:
+            print(f"      skip: {win['app_id'] or '(no app_id)'} — {win['skip_reason']}")
+    return 0
+
+
+def load_snapshot():
+    path = snapshot_path()
+    if not path.exists():
+        return None
+    try:
+        document = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"session: snapshot unreadable ({error})")
+    if document.get("version") != VERSION:
+        raise SystemExit(f"session: snapshot version {document.get('version')} is not {VERSION}")
+    return document
+
+
+def restore(dry_run=False):
+    document = load_snapshot()
+    if document is None:
+        # Autostart runs this on every login: a machine that never saved
+        # a session yet has nothing to do, and that is not an error.
+        print("session restore: no snapshot yet (nothing to restore)")
+        return 0
+    plan = []
+    for ws in document.get("workspaces", []):
+        for win in ws["windows"]:
+            if win["skip_reason"]:
+                continue
+            plan.append((ws, win))
+    if dry_run:
+        for ws, win in plan:
+            label = ws["name"] or "(unnamed)"
+            print(f"  [{label}] {win['app_id']}: {' '.join(win['command'])}")
+        print(f"session restore (dry run): {len(plan)} windows, "
+              f"{len(document.get('workspaces', []))} workspaces")
+        return 0
+    if not plan:
+        print("session restore: nothing restorable in the snapshot")
+        return 0
+
+    launched_groups = set()
+    placed = []  # (ws_name, win, window_id)
+    for ws, win in plan:
+        name = ws["name"]
+        group = win["group"]
+        app_id = win["app_id"]
+        before = {w["id"] for w in (msg("windows") or [])}
+        if group is None or group not in launched_groups:
+            launched_groups.add(group)
+            try:
+                subprocess.Popen(win["command"], stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            except OSError as error:
+                log(f"launch failed for {app_id}: {error}")
+                continue
+            win_id = _wait_new_window(app_id, before, timeout=10.0)
+        else:
+            win_id = _wait_new_window(app_id, before, timeout=4.0)
+        if win_id is None:
+            log(f"no window appeared for {app_id} (left to the app's own restore)")
+            continue
+        _place_on_workspace(win_id, name)
+        placed.append((ws, win, win_id))
+
+    _replay_geometry(placed)
+
+    for ws in document.get("workspaces", []):
+        if ws.get("focused") and ws["name"]:
+            action("focus-workspace", ws["name"])
+            break
+    print(f"session restore: placed {len(placed)} of {len(plan)} windows")
+    return 0
+
+
+def _wait_new_window(app_id, known_ids, timeout):
+    """First window whose app_id starts with app_id and is not already known."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        windows = msg("windows") or []
+        for win in windows:
+            if win["id"] in known_ids:
+                continue
+            if (win.get("app_id") or "").startswith(app_id):
+                return win["id"]
+        time.sleep(0.2)
+    return None
+
+
+def _place_on_workspace(win_id, name):
+    """Move a window onto the named workspace, creating and naming it if absent."""
+    if not name:
+        return
+    workspaces = msg("workspaces") or []
+    if any(w.get("name") == name for w in workspaces):
+        action("move-window-to-workspace", "--window-id", str(win_id), name)
+    else:
+        index = len(workspaces) + 1
+        action("move-window-to-workspace", "--window-id", str(win_id), str(index))
+        action("set-workspace-name", name, "--workspace", str(index))
+
+
+def _replay_geometry(placed):
+    """Approximate column order, widths, stacking and floating. Best effort."""
+    by_ws = {}
+    for ws, win, win_id in placed:
+        by_ws.setdefault(ws["name"] if ws["name"] else "", []).append((ws, win, win_id))
+    for _name, entries in by_ws.items():
+        # Column order: walk the recorded columns and pull each into place.
+        desired = sorted({w["column"] for _ws, w, _i in entries if w["column"]})
+        for target_index, _col in enumerate(desired, start=1):
+            candidate = next((i for _ws, w, i in entries if w["column"] == _col), None)
+            if candidate is not None:
+                action("focus-window", "--id", str(candidate))
+                action("move-column-to-index", str(target_index))
+        # Widths: one set-column-width per recorded column fraction.
+        seen_cols = set()
+        for _ws, win, win_id in entries:
+            col = win["column"]
+            if col is None or col in seen_cols or win["width"] is None:
+                continue
+            seen_cols.add(col)
+            action("focus-window", "--id", str(win_id))
+            action("set-column-width", f"{round(win['width'] * 100)}%")
+        # Floating last: a floating window must not disturb the tiling replay.
+        for _ws, win, win_id in entries:
+            if win["floating"]:
+                action("focus-window", "--id", str(win_id))
+                action("toggle-window-floating")
+
+
+def check():
+    try:
+        enabled, debounce = settings()
+    except (OSError, ValueError) as error:
+        print(f"session: settings invalid: {error}")
+        return 1
+    print(f"session: enabled={enabled} debounce={debounce}s")
+    path = snapshot_path()
+    if path.exists():
+        try:
+            document = json.loads(path.read_text())
+            print(f"session: snapshot present (version {document.get('version')}, "
+                  f"{len(document.get('workspaces', []))} workspaces)")
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"session: snapshot unreadable: {error}")
+            return 1
+    else:
+        print("session: no snapshot yet (fine before the first save)")
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="niri-session-snapshot", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--check", action="store_true", help="validate settings and snapshot; no IPC")
+    parser.add_argument("command", nargs="?", default="run",
+                        choices=["run", "status", "restore"])
+    parser.add_argument("--dry-run", action="store_true", help="with restore: print the plan only")
+    args = parser.parse_args()
+
+    if args.check:
+        sys.exit(check())
+    if args.command == "status":
+        sys.exit(status())
+    if args.command == "restore":
+        sys.exit(restore(dry_run=args.dry_run))
+
+    try:
+        enabled, debounce = settings()
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"session snapshot: settings invalid: {error}")
+    if not enabled:
+        sys.exit(0)  # started by `niri-spaces start`; off by default, so end quietly
+    daemon(debounce)
+
+
+if __name__ == "__main__":
+    main()
