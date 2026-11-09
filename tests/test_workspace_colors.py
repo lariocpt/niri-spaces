@@ -82,7 +82,7 @@ class ReconcileCase(unittest.TestCase):
         self.addCleanup(patch_module('include_path', lambda: self.include))
         self.fake = FakeNiri()
         self.reconciler = helper['Reconciler'](
-            helper['SCHEMES'], 'sequential', helper['load_state'](),
+            helper['DEFAULT_POOL'], 'sequential', helper['load_state'](),
             request=self.fake.request, query=self.fake.query,
             validator=lambda text: True)
         self.reconciler.writer = lambda entries: self.include.write_text(
@@ -280,26 +280,56 @@ class RandomAssignment(ReconcileCase):
         self.assertNotIn('teal', schemes)
         self.assertEqual(len(set(schemes)), 2)
 
-    def test_exhausted_palette_is_handed_back_not_stolen(self):
-        # All eight schemes are held by pre-existing (re-adopted) workspaces;
-        # a ninth cannot get a distinct name. The fallback pick is ignored by
-        # niri, the held workspace must never be un-named, and the newcomer
-        # is handed back unnamed.
+    def test_exhausted_classics_overflow_into_extras(self):
+        # All eight classics are held by pre-existing (re-adopted) workspaces:
+        # a newcomer must overflow into the extras instead of being left on
+        # the machine theme next to a same-coloured neighbour. The fixture
+        # never lands the rename, so after its one retry the workspace is
+        # handed back — but both rename attempts must target the extras tier,
+        # never a held classic, and no held workspace may be un-named.
         self.reconciler.assignment = 'random'
         taken = [ws(i + 1, i + 1, s['name'], window=i)
                  for i, s in enumerate(helper['SCHEMES'])]
+        extras = {s['name'] for s in helper['EXTRA_SCHEMES']}
         self.reconciler.observe(changed(*taken))
         self.reconciler.observe(changed(*taken, ws(99, 9)))
         self.reconciler.observe(changed(*taken, ws(99, 9)))
+        self.reconciler.observe(changed(*taken, ws(99, 9)))
+        state = helper['load_state']()
+        renames = [c[2] for c in self.fake.calls
+                   if c[:2] == ('action', 'set-workspace-name')]
+        self.assertEqual(len(renames), 2)
+        self.assertTrue(set(renames) <= extras)
+        self.assertNotIn('99', state['assignments'])
+        self.assertIn('99', state['excluded'])
+        self.assertEqual(state['assignments'],
+                         {str(i + 1): s['name']
+                          for i, s in enumerate(helper['SCHEMES'])})
+        self.assertFalse(any(c[:2] == ('action', 'unset-workspace-name')
+                             for c in self.fake.calls))
+
+    def test_exhausted_palette_is_handed_back_not_stolen(self):
+        # All sixteen schemes — the eight classics and the eight extras — are
+        # held by pre-existing (re-adopted) workspaces; a seventeenth cannot
+        # get a distinct name. The fallback pick is ignored by niri, the held
+        # workspaces must never be un-named, and the newcomer is handed back
+        # unnamed.
+        self.reconciler.assignment = 'random'
+        pool = helper['DEFAULT_POOL']
+        taken = [ws(i + 1, i + 1, s['name'], window=i)
+                 for i, s in enumerate(pool)]
+        self.reconciler.observe(changed(*taken))
+        self.reconciler.observe(changed(*taken, ws(99, 17)))
+        self.reconciler.observe(changed(*taken, ws(99, 17)))
         state = helper['load_state']()
         self.assertNotIn('99', state['assignments'])
         self.assertIn('99', state['excluded'])
         self.assertEqual(state['assignments'],
-                         {str(i + 1): s['name'] for i, s in enumerate(helper['SCHEMES'])})
+                         {str(i + 1): s['name'] for i, s in enumerate(pool)})
         self.assertFalse(any(c[:2] == ('action', 'unset-workspace-name')
                              for c in self.fake.calls))
         self.assertEqual(self.entries(),
-                         {s['name'] for s in helper['SCHEMES']})
+                         {s['name'] for s in pool})
 
 
 class OneShot(ReconcileCase):
@@ -396,7 +426,7 @@ class Settings(unittest.TestCase):
         enabled, assignment, schemes = helper['settings']()
         self.assertFalse(enabled)
         self.assertEqual(assignment, 'random')
-        self.assertEqual(len(schemes), 8)
+        self.assertEqual(len(schemes), 16)
         names = {s['name'] for s in schemes}
         # The classic families the feature is named for.
         self.assertTrue({'teal', 'purple', 'neon', 'yellow'} <= names)
@@ -406,7 +436,7 @@ class Settings(unittest.TestCase):
         enabled, assignment, schemes = helper['settings']()
         self.assertTrue(enabled)
         self.assertEqual(assignment, 'random')
-        self.assertEqual(len(schemes), 8)
+        self.assertEqual(len(schemes), 16)
 
     def test_nonbool_enabled_rejected(self):
         self.set('{"workspace_colors": "yes"}')
@@ -471,7 +501,7 @@ class Render(unittest.TestCase):
 
 
 class PickScheme(unittest.TestCase):
-    schemes = helper['SCHEMES']
+    schemes = helper['DEFAULT_POOL']
 
     def test_sequential_skips_taken_and_advances_cursor(self):
         name, cursor = helper['pick_scheme']('sequential', self.schemes, {'teal'}, 0)
@@ -491,6 +521,45 @@ class PickScheme(unittest.TestCase):
             name, _ = helper['pick_scheme'](
                 'random', self.schemes, taken, 0, rng=random.Random(1))
             self.assertIn(name, free)
+
+    def test_random_prefers_free_classics_over_free_extras(self):
+        # Every classic free, every extra held: the pick must stay on the
+        # free classics even though the pool is sixteen deep.
+        free = {'teal', 'purple', 'neon'}
+        taken = {s['name'] for s in self.schemes} - free
+        rng = random.Random(1)
+        for _ in range(50):
+            name, _ = helper['pick_scheme'](
+                'random', self.schemes, taken, 0, rng=rng,
+                primary=list(helper['CLASSIC_NAMES']))
+            self.assertIn(name, free)
+
+    def test_random_overflows_into_extras_when_classics_held(self):
+        # Every classic held, some extras free: the pick overflows into the
+        # free extras — the case that left gdp-work with same-coloured
+        # neighbours on the eight-scheme palette.
+        free = {'crimson', 'cappuccino', 'silver'}
+        taken = {s['name'] for s in self.schemes} - free
+        rng = random.Random(1)
+        for _ in range(50):
+            name, _ = helper['pick_scheme'](
+                'random', self.schemes, taken, 0, rng=rng,
+                primary=list(helper['CLASSIC_NAMES']))
+            self.assertIn(name, free)
+
+    def test_random_without_primary_stays_uniform(self):
+        # No tier (a user pool holding no classic): uniform over every free
+        # name, the pre-0.3.1 behaviour.
+        free = {'teal', 'crimson'}
+        taken = {s['name'] for s in self.schemes} - free
+        rng = random.Random(1)
+        seen = set()
+        for _ in range(200):
+            name, _ = helper['pick_scheme'](
+                'random', self.schemes, taken, 0, rng=rng)
+            self.assertIn(name, free)
+            seen.add(name)
+        self.assertEqual(seen, free)
 
 
 class MainCli(unittest.TestCase):

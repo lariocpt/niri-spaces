@@ -9,6 +9,32 @@ The `## [X.Y.Z]` heading shape is load-bearing, not a style choice:
 next to use as the GitHub Release notes, and refuses to publish a tag that has no
 section here. The tag being released must match the heading it releases.
 
+## [0.3.1] - 2026-11-09
+
+### Added
+- Eight extra color schemes — `crimson`, `cappuccino`, `lime`, `spring`,
+  `indigo`, `violet`, `fuchsia`, `silver` — placed in the hue gaps between
+  the eight classics. The default palette is now sixteen schemes
+  (`DEFAULT_POOL`): a new workspace draws a free classic first and overflows
+  into the extras only when all eight classics are already held, and only a
+  seventeenth simultaneous managed workspace is left on the machine theme.
+  Sequential assignment sweeps the full sixteen, classics first. A user's own
+  `workspace_color_schemes` replaces the pool and stays uniform, as before.
+
+### Fixed
+- A new workspace created while every classic scheme was already held
+  received a rename that niri silently ignores, and ended up on the machine
+  theme next to an identically coloured neighbour (two reds side by side).
+  It now receives a distinguishable extra scheme.
+- `niri-workspace-colors` is committed with its executable bit set. Packaged
+  installs were never affected, but running `niri-spaces start` from a
+  checkout silently skipped the color watcher.
+
+### Notes
+- This patch was released after 0.4.0 on purpose: it patches the 0.3.x line,
+  so a host pinned to 0.3.x gets the fix without the 0.4.0 workspace-ops
+  features.
+
 ## [0.3.0] - 2026-11-07
 
 ### Added

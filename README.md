@@ -204,17 +204,21 @@ warning, whereas a plain include would make the whole config fail to load. The
 file's path is watched either way, so the first file the helper writes is
 picked up automatically.
 
-Each new unnamed workspace receives a scheme from a classic palette — `teal`,
-`purple`, `neon`, `yellow`, `green`, `maroon`, `blue`, `nord`: the dark
-backgrounds of the Color Terminal set both work machines already ship, paired
-with the accent of the theme family they belong to. By default a free scheme is
-picked at random; `workspace_color_assignment: "sequential"` hands the palette
-out in order instead, and `workspace_color_schemes` replaces it with your own
-names and colors. While two workspaces exist at the same time they never show
-the same scheme — a ninth workspace, with all eight names taken, is left
-unnamed rather than have a name stolen from another. Workspaces that already
-exist when the watcher starts keep the machine theme, and workspaces you name
-by hand are never touched.
+Each new unnamed workspace receives a scheme from a sixteen-color palette: the
+eight classics — `teal`, `purple`, `neon`, `yellow`, `green`, `maroon`,
+`blue`, `nord` — the dark backgrounds of the Color Terminal set both work
+machines already ship, paired with the accent of the theme family they belong
+to, plus eight extras — `crimson`, `cappuccino`, `lime`, `spring`, `indigo`,
+`violet`, `fuchsia`, `silver` — placed in the hue gaps between the classics.
+By default a free classic is picked at random and the extras are used only
+when every classic is already held; `workspace_color_assignment:
+"sequential"` hands the palette out in order (classics first) instead, and
+`workspace_color_schemes` replaces it with your own names and colors. While
+two workspaces exist at the same time they never show the same scheme — a
+seventeenth workspace, with all sixteen names taken, is left unnamed rather
+than have a name stolen from another. Workspaces that already exist when the
+watcher starts keep the machine theme, and workspaces you name by hand are
+never touched.
 
 A scheme belongs to its workspace until the workspace is destroyed: the
 watcher removes the workspace's entry from the include when the workspace

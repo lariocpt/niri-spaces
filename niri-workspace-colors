@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Give each new niri workspace a classic color scheme, until the workspace is destroyed.
+"""Give each new niri workspace a scheme from the 16-color palette, until the
+workspace is destroyed.
 
 A scheme is a per-workspace layout part (background, focus ring, border, shadow,
 tab indicator) declared in the include file ~/.config/niri/workspace-colors.kdl.
@@ -21,7 +22,10 @@ workspaces query reports) or a workspace name.
 
 Workspaces that already exist when the watcher starts, and workspaces the user
 names by hand, are left exactly as they are: they keep the machine theme and
-can be recolor-ed but are never renamed on their own.
+can be recolor-ed but are never renamed on their own. New workspaces draw a
+classic while one is free and overflow into the extras only when all eight
+classics are held; a workspace that cannot get a free name keeps the machine
+theme.
 """
 import argparse
 import fcntl
@@ -52,6 +56,33 @@ SCHEMES = [
     {"name": "blue",     "background": "#2c3e50", "ring_active": "#66b8e8", "ring_inactive": "#3a4d61", "border": "#3a4d61", "shadow": "#1e243088", "tab_active": "#66b8e8", "tab_inactive": "#3a4d61"},
     {"name": "nord",     "background": "#3b4252", "ring_active": "#88c0d0", "ring_inactive": "#4c566a", "border": "#4c566a", "shadow": "#1e243088", "tab_active": "#88c0d0", "tab_inactive": "#4c566a"},
 ]
+
+# Extra palette: the overflow tier. A new workspace draws from here only when
+# every classic is already held, so it never ends up the same colour as a
+# neighbour. The hues sit in the gaps between the classics — crimson and
+# cappuccino by the reds, lime and spring between yellow and teal, indigo and
+# violet between blue and purple, fuchsia by the magentas, silver neutral —
+# so no two of the sixteen sit on a close hue.
+EXTRA_SCHEMES = [
+    {"name": "crimson",    "background": "#3a2424", "ring_active": "#ff6b6b", "ring_inactive": "#553232", "border": "#553232", "shadow": "#1e243088", "tab_active": "#ff6b6b", "tab_inactive": "#553232"},
+    {"name": "cappuccino", "background": "#362a1e", "ring_active": "#c9a87c", "ring_inactive": "#5a4633", "border": "#5a4633", "shadow": "#1e243088", "tab_active": "#c9a87c", "tab_inactive": "#5a4633"},
+    {"name": "lime",       "background": "#2e3a1f", "ring_active": "#b2e051", "ring_inactive": "#44522a", "border": "#44522a", "shadow": "#1e243088", "tab_active": "#b2e051", "tab_inactive": "#44522a"},
+    {"name": "spring",     "background": "#1f3a2f", "ring_active": "#29ef86", "ring_inactive": "#2f5244", "border": "#2f5244", "shadow": "#1e243088", "tab_active": "#29ef86", "tab_inactive": "#2f5244"},
+    {"name": "indigo",     "background": "#242b3f", "ring_active": "#7b96ff", "ring_inactive": "#333d58", "border": "#333d58", "shadow": "#1e243088", "tab_active": "#7b96ff", "tab_inactive": "#333d58"},
+    {"name": "violet",     "background": "#2e2440", "ring_active": "#9b8cff", "ring_inactive": "#423358", "border": "#423358", "shadow": "#1e243088", "tab_active": "#9b8cff", "tab_inactive": "#423358"},
+    {"name": "fuchsia",    "background": "#3a1f38", "ring_active": "#d95cd9", "ring_inactive": "#4a2a4a", "border": "#4a2a4a", "shadow": "#1e243088", "tab_active": "#d95cd9", "tab_inactive": "#4a2a4a"},
+    {"name": "silver",     "background": "#333a42", "ring_active": "#d8dee8", "ring_inactive": "#4a525e", "border": "#4a525e", "shadow": "#1e243088", "tab_active": "#d8dee8", "tab_inactive": "#4a525e"},
+]
+
+# The default pool a new workspace draws from: the eight classics first, in
+# their classic order, then the eight extras. Sequential assignment sweeps it
+# in that order; random prefers a free classic and overflows into the extras
+# only when every classic is held. workspace_color_schemes replaces the whole
+# pool with a user's own names and colors.
+DEFAULT_POOL = SCHEMES + EXTRA_SCHEMES
+
+# The classics' names, used to derive the preferred tier of a pool.
+CLASSIC_NAMES = tuple(s["name"] for s in SCHEMES)
 
 HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 COLOR_KEYS = ("background", "ring_active", "ring_inactive", "border", "shadow",
@@ -89,7 +120,7 @@ def settings():
         raise ValueError('workspace_color_assignment must be "random" or "sequential"')
     schemes = config.get("workspace_color_schemes", None)
     if schemes is None:
-        schemes = SCHEMES
+        schemes = DEFAULT_POOL
     if not isinstance(schemes, list) or not schemes:
         raise ValueError("workspace_color_schemes must be a nonempty list")
     seen = set()
@@ -224,15 +255,26 @@ def workspaces(request=msg):
     return json.loads(request("--json", "workspaces"))
 
 
-def pick_scheme(assignment, schemes, taken, cursor, rng=random):
+def pick_scheme(assignment, schemes, taken, cursor, rng=random, primary=None):
     """Choose the next scheme; 'taken' are names live workspaces already bear,
-    so two workspaces never show the same scheme while both exist."""
+    so two workspaces never show the same scheme while both exist. With a
+    'primary' tier (the classics of the default pool), random picks a free
+    primary and overflows into the rest only when every primary is held;
+    without one it stays uniform over the pool. The sequential sweep and the
+    exhausted fallback work on the pool order either way."""
     if assignment == "sequential":
         for offset in range(len(schemes)):
             scheme = schemes[(cursor + offset) % len(schemes)]
             if scheme["name"] not in taken:
                 return scheme["name"], (cursor + offset + 1) % len(schemes)
         return schemes[cursor % len(schemes)]["name"], (cursor + 1) % len(schemes)
+    if primary is None:
+        primary = [s["name"] for s in schemes]
+    primary = set(primary)
+    free_primary = [s["name"] for s in schemes
+                    if s["name"] in primary and s["name"] not in taken]
+    if free_primary:
+        return rng.choice(free_primary), cursor
     free = [s["name"] for s in schemes if s["name"] not in taken]
     if not free:
         free = [s["name"] for s in schemes]
@@ -262,8 +304,15 @@ class Reconciler:
     """
 
     def __init__(self, schemes, assignment, state, request=msg,
-                 query=workspaces, validator=validate_fragment, writer=None):
+                 query=workspaces, validator=validate_fragment, writer=None,
+                 primary=None):
         self.schemes = {s["name"]: s for s in schemes}
+        if primary is None:
+            # The default pool draws the classics first; a user pool that
+            # holds none of them stays flat, uniform over its own names.
+            primary = [s["name"] for s in schemes if s["name"] in CLASSIC_NAMES] \
+                or [s["name"] for s in schemes]
+        self.primary = primary
         self.assignment = assignment
         self.state = state
         self.request = request
@@ -399,7 +448,7 @@ class Reconciler:
                      | {p["scheme"] for p in state["pending"].values()})
             scheme, state["cursor"] = pick_scheme(
                 self.assignment, list(self.schemes.values()),
-                taken, state["cursor"])
+                taken, state["cursor"], primary=self.primary)
             state["pending"][ident] = {"scheme": scheme, "attempts": 1}
             just_created.add(ident)
             name_workspace(ws["idx"], scheme, self._note)
@@ -513,7 +562,7 @@ class Reconciler:
             taken.discard(old)
         scheme, self.state["cursor"] = pick_scheme(
             self.assignment, list(self.schemes.values()),
-            taken, self.state["cursor"])
+            taken, self.state["cursor"], primary=self.primary)
         # Order matters: validate the resulting file first, then rename (the
         # rename lands synchronously, so afterwards the old name has no bearer
         # and the new one does), then write in the following reconcile pass.
