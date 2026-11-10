@@ -158,9 +158,12 @@ EOF
 EOF
     run "$NS_CLI" workspace-strip status
     [ "$status" -eq 0 ]
-    # Creation order (6 before 1) must not leak: chips read 1..n.
-    [ "$(echo "$output" | sed -n 2p)" = "  [1] (unnamed)        no scheme" ]
-    [[ "$output" == *"  [2] purple           purple"* ]]
+    # Per-monitor layout: a "monitor <name>:" heading, then the group's
+    # workspaces by displayed index. Creation order (6 before 1) must not
+    # leak: chips read 1..n, and the focus marker follows the workspace.
+    [ "$(echo "$output" | grep '^  monitor ' | sed -n 1p)" = "  monitor eDP-1:" ]
+    [ "$(echo "$output" | grep '^    \[' | sed -n 1p)" = "    [1] (unnamed)        no scheme" ]
+    [ "$(echo "$output" | grep '^    \[' | sed -n 2p)" = "    [2] purple           purple *" ]
 }
 
 @test "strip: reorder moves the workspace at FROM onto TO by reference" {
@@ -171,7 +174,12 @@ EOF
 EOF
     run "$NS_CLI" workspace-strip reorder 2 3
     [ "$status" -eq 0 ]
-    [ "$(nth_action 1)" = "action move-workspace-to-index 3 --reference 2" ]
+    # Reorder actions resolve against the focused monitor, so the move is
+    # preceded by a focus-monitor for the target's screen — exactly two
+    # actions, in this order.
+    [ "$(nth_action 1)" = "action focus-monitor eDP-1" ]
+    [ "$(nth_action 2)" = "action move-workspace-to-index 3 --reference 2" ]
+    [ "$(wc -l <"$NIRI_FAKE_ACTIONS")" -eq 2 ]
 }
 
 @test "strip: reorder refuses positions with no workspace" {
