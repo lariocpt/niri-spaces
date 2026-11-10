@@ -268,14 +268,19 @@ class GroupingTests(unittest.TestCase):
             'HDMI-A-1')
 
 
+class FakeRect:
+    def __init__(self, x, y, width, height):
+        self.x, self.y, self.width, self.height = x, y, width, height
+
+
 class FakeMonitor:
     """The three GdkMonitor getters assign_monitors consults."""
 
-    def __init__(self, connector=None, manufacturer=None, model=None):
-        self._connector, self._manufacturer, self._model = connector, manufacturer, model
+    def __init__(self, geometry=None, manufacturer=None, model=None):
+        self._geometry, self._manufacturer, self._model = geometry, manufacturer, model
 
-    def get_connector(self):
-        return self._connector
+    def get_geometry(self):
+        return self._geometry
 
     def get_manufacturer(self):
         return self._manufacturer
@@ -290,47 +295,80 @@ class MonitorAssignmentTests(unittest.TestCase):
 
     @staticmethod
     def outputs(*specs):
-        return {name: {'name': name, 'make': make, 'model': model}
-                for name, make, model in specs}
+        out = {}
+        for name, make, model, logical in specs:
+            info = {'name': name}
+            if make is not None:
+                info['make'] = make
+            if model is not None:
+                info['model'] = model
+            if logical is not None:
+                info['logical'] = dict(zip(('x', 'y', 'width', 'height'), logical))
+            out[name] = info
+        return out
 
-    def test_connector_names_match_exactly_whatever_the_order(self):
-        outputs = self.outputs(('eDP-1', 'Japan Display Inc.', 'GPD1001H'),
-                               ('HDMI-A-1', 'Samsung Electric Company', 'U28E590'))
-        monitors = [FakeMonitor('HDMI-A-1'), FakeMonitor('eDP-1')]  # GDK order differs
+    def test_layout_geometry_matches_whatever_the_order(self):
+        outputs = self.outputs(('eDP-1', 'Japan Display Inc.', 'GPD1001H',
+                                (4267, 373, 1706, 1066)),
+                               ('HDMI-A-1', 'Samsung Electric Company', 'U28E590',
+                                (2560, 480, 1706, 960)))
+        # GDK's list order differs and its rounding is a step off niri's:
+        # the rectangles still identify each display uniquely.
+        monitors = [FakeMonitor(FakeRect(2560, 480, 1707, 960)),
+                    FakeMonitor(FakeRect(4267, 373, 1707, 1067))]
         mapping = helper['assign_monitors'](outputs, monitors)
         self.assertEqual(mapping, {'eDP-1': monitors[1], 'HDMI-A-1': monitors[0]})
 
-    def test_identical_models_each_get_their_own_monitor(self):
-        # Two same-model screens share one EDID identity. With no connector
-        # strings to break the tie, the EDID pass must hand out the two
-        # GdkMonitors one-to-one instead of double-booking the first.
-        outputs = self.outputs(('DP-1', 'ACME', 'X1'), ('DP-2', 'ACME', 'X1'))
-        monitors = [FakeMonitor(model='X1', manufacturer='ACME'),
-                    FakeMonitor(model='X1', manufacturer='ACME')]
+    def test_identical_models_at_different_places_each_get_their_own(self):
+        # Two same-model screens share one EDID identity, and GTK 3 offers
+        # no connector name to break the tie: the layout geometry must, and
+        # it says exactly which monitor is which.
+        outputs = self.outputs(('DP-1', 'ACME', 'X1', (0, 0, 1920, 1080)),
+                               ('DP-2', 'ACME', 'X1', (1920, 0, 1920, 1080)))
+        monitors = [FakeMonitor(FakeRect(1920, 0, 1920, 1080), 'ACME', 'X1'),
+                    FakeMonitor(FakeRect(0, 0, 1920, 1080), 'ACME', 'X1')]
+        mapping = helper['assign_monitors'](outputs, monitors)
+        self.assertIs(mapping['DP-1'], monitors[1])
+        self.assertIs(mapping['DP-2'], monitors[0])
+
+    def test_edid_identity_is_the_fallback_when_geometry_disagrees(self):
+        # A screen whose geometry GDK reports outside niri's rounding step
+        # (or not at all): make+model, handed out one-to-one, still maps
+        # both identical models without double-booking one.
+        outputs = self.outputs(('DP-1', 'ACME', 'X1', None), ('DP-2', 'ACME', 'X1', None))
+        monitors = [FakeMonitor(FakeRect(0, 0, 800, 600), 'ACME', 'X1'),
+                    FakeMonitor(FakeRect(800, 0, 1280, 1024), 'ACME', 'X1')]
         mapping = helper['assign_monitors'](outputs, monitors)
         self.assertEqual(len(mapping), 2)
         self.assertIsNot(mapping['DP-1'], mapping['DP-2'])
 
-    def test_edid_identity_is_the_fallback_when_connectors_disagree(self):
-        outputs = self.outputs(('DP-3', 'ACME', 'X1'))
-        monitors = [FakeMonitor('DP-9', 'ACME', 'X1')]
-        self.assertEqual(helper['assign_monitors'](outputs, monitors),
-                         {'DP-3': monitors[0]})
-
-    def test_panel_without_edid_details_matches_when_alone(self):
-        # A screen reporting neither connector nor EDID still gets its strip
-        # — but only while it is unambiguous: one output, one monitor.
-        outputs = {'LVDS-1': {'name': 'LVDS-1'}}
-        monitors = [FakeMonitor()]
+    def test_screen_without_any_identity_matches_when_alone(self):
+        # A panel reporting no EDID and no usable geometry still gets its
+        # strip — but only while it is unambiguous: one output, one monitor.
+        outputs = self.outputs(('LVDS-1', None, None, None))
+        monitors = [FakeMonitor(FakeRect(0, 0, 1024, 768), 'OTHER', 'Z9')]
         self.assertEqual(helper['assign_monitors'](outputs, monitors),
                          {'LVDS-1': monitors[0]})
 
     def test_unmappable_output_is_left_unmapped_not_guessed_at(self):
-        # GDK has enumerated one monitor while niri reports two (a hotplug
-        # mid-flight): the second output must wait, never steal a monitor.
-        outputs = self.outputs(('DP-1', 'ACME', 'X1'), ('DP-2', 'ACME', 'X2'))
-        monitors = [FakeMonitor('DP-1', 'ACME', 'X1')]
-        self.assertEqual(list(helper['assign_monitors'](outputs, monitors)), ['DP-1'])
+        # GDK has enumerated one monitor while niri reports two with known
+        # but different identities (a hotplug mid-flight): the outputs must
+        # not guess-share the one screen.
+        outputs = self.outputs(('DP-1', 'ACME', 'X1', (0, 0, 1920, 1080)),
+                               ('DP-2', 'ACME', 'X2', (1920, 0, 1920, 1080)))
+        monitors = [FakeMonitor(FakeRect(0, 0, 1920, 1080), 'ACME', 'X1')]
+        self.assertEqual(helper['assign_monitors'](outputs, monitors),
+                         {'DP-1': monitors[0]})
+
+    def test_geometry_beyond_the_rounding_step_is_not_a_match(self):
+        # Two places 100px apart are two displays; only a rounding step of
+        # a few pixels is "the same rectangle" to niri and GDK.
+        rect = FakeRect(0, 0, 1920, 1080)
+        self.assertTrue(helper['geometry_matches'](
+            {'x': 0, 'y': 0, 'width': 1921, 'height': 1081}, rect))
+        self.assertFalse(helper['geometry_matches'](
+            {'x': 100, 'y': 0, 'width': 1920, 'height': 1080}, rect))
+        self.assertFalse(helper['geometry_matches'](None, rect))
 
 
 class DragRowTests(unittest.TestCase):

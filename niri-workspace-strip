@@ -222,25 +222,41 @@ def focused_output(live):
     return None
 
 
+GEOMETRY_TOLERANCE = 4  # px; GDK rounds niri's fractional-scaled geometry by a step
+
+
+def geometry_matches(logical, geometry):
+    """Whether a niri output's logical rect is the same display as a GDK
+    monitor's geometry. Niri and GDK compute logical size from the mode and
+    fractional scale with slightly different rounding, so the rectangles
+    agree up to a small step, never to the exact pixel."""
+    if not logical or geometry is None:
+        return False
+    return (abs(logical.get("x", 0) - geometry.x) <= GEOMETRY_TOLERANCE
+            and abs(logical.get("y", 0) - geometry.y) <= GEOMETRY_TOLERANCE
+            and abs(logical.get("width", 0) - geometry.width) <= GEOMETRY_TOLERANCE
+            and abs(logical.get("height", 0) - geometry.height) <= GEOMETRY_TOLERANCE)
+
+
 def assign_monitors(outputs, monitors):
     """{niri output name: GdkMonitor} for any number and kind of screens.
 
-    Niri and GDK speak different vocabularies for the same displays, so the
-    mapping runs in three passes: (1) the connector name — niri names outputs
-    exactly the way the kernel names connectors ("HDMI-A-1", "DP-3", "eDP-1"),
-    and GDK exposes the same string; this is exact and unambiguous. (2) EDID
-    identity (make+model), taken one-to-one in name order, so two identical
-    models still each get a GdkMonitor of their own instead of both claiming
-    the first. (3) a leftover pair when one output and one monitor remain —
-    the case of a panel that reports no EDID details at all. Anything still
-    unmapped is reported, never guessed at.
+    GTK 3 exposes no connector name on a monitor, so the mapping runs in
+    three passes. (1) Layout geometry: niri reports each output's logical
+    position and size and GDK reports the same screen layout, so this is
+    exact and unambiguous — it distinguishes even two identical models
+    sitting at different places in the layout. (2) EDID identity (make and
+    model), taken one-to-one in name order, for screens whose geometry GDK
+    reports differently than niri (fractional scaling, unusual rounding).
+    (3) A leftover pair when one output and one monitor remain — the screen
+    that reports no identity at all, unambiguous only while it is alone.
+    Anything still unmapped is reported, never guessed at.
     """
     remaining = list(monitors)
     mapping = {}
     for name, info in outputs.items():
-        connector = info.get("name") or name
         for monitor in remaining:
-            if monitor.get_connector() == connector:
+            if geometry_matches(info.get("logical"), monitor.get_geometry()):
                 mapping[name] = monitor
                 remaining.remove(monitor)
                 break
@@ -387,9 +403,12 @@ def run_daemon(height, position, align, margin, schemes, assignments,
 
     # A plugged or unplugged screen changes the monitor list before (or
     # without) any workspace event: re-map the strips so a new window finds
-    # its GdkMonitor and a dead one disappears even when niri is quiet.
-    display = Gdk.Display.get_default()
-    display.connect("monitor-changed", lambda *_: manager.sync_monitors())
+    # its GdkMonitor and a dead one disappears even when niri is quiet. In
+    # GTK 3 the hotplug signal is on the screen (GdkDisplay's monitor_added
+    # /monitor_removed are the GTK 4 API); the screen still just routes to
+    # the default display's monitor list.
+    screen = Gdk.Screen.get_default()
+    screen.connect("monitors-changed", lambda *_: manager.sync_monitors())
 
     manager.refresh(force=True)  # initial snapshot + windows + paint
     if not manager.strips:
@@ -579,7 +598,10 @@ class StripManager:
             return None
         if output not in outputs:
             return None
-        monitors = list(self.Gdk.Display.get_default().get_monitors())
+        # GTK 3 enumerates monitors by index on the display (GdkDisplay's
+        # get_monitors iterator is the GTK 4 API and does not exist here).
+        display = self.Gdk.Display.get_default()
+        monitors = [display.get_monitor(i) for i in range(display.get_n_monitors())]
         monitor = assign_monitors(outputs, monitors).get(output)
         if monitor is None:
             log(f"cannot map monitor {output} to a GdkMonitor yet; "
