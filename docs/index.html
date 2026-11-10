@@ -169,7 +169,7 @@
   niri-spaces list                    list available spaces and templates
   niri-spaces terminal-pairs [--check] run the optional 50/50 terminal watcher
   niri-spaces workspace-colors [--check] run the optional per-workspace color scheme watcher
-  niri-spaces workspace-strip [--check | status | reorder FROM TO] the optional coloured workspace strip
+  niri-spaces workspace-strip [--check | status | reorder FROM TO [OUTPUT]] the optional coloured workspace strip
   niri-spaces session [--check | status | restore [--dry-run]] the optional session snapshot &amp; restore
 
 Space files live in ~/.config/niri-spaces/spaces/ and templates/.
@@ -234,7 +234,7 @@ $BROWSER_APPID | $BROWSER | | browser_id
       </tbody>
     </table>
     </div>
-    <p>The same move is available headless — <code>niri-spaces workspace-strip reorder FROM TO</code> issues exactly the drag's niri action, and <code>workspace-strip status</code> prints the strip's current order in the terminal.</p>
+    <p>The same move is available headless — <code>niri-spaces workspace-strip reorder FROM TO [OUTPUT]</code> issues exactly the drag's niri action (with <code>OUTPUT</code> naming the monitor when two workspaces share a number), and <code>workspace-strip status</code> prints the strip's current order in the terminal.</p>
     <div class="note">The strip is a separate helper (<code>niri-workspace-strip</code>, Python 3 + GTK 3 via <code>gtk-layer-shell</code>). It is optional, off by default, and started by <code>niri-spaces start</code>; <code>niri-spaces workspace-strip --check</code> reports the toggle and whether the GTK bindings are importable without touching a running compositor.</div>
   </section>
 
