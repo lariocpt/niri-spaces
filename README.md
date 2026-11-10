@@ -267,6 +267,15 @@ is safe to keep it in autostart. In a session that is already running, start it
 with `niri-spaces workspace-strip` — quit the old strip first if you change its
 settings mid-session.
 
+The strip is the **fallback** workspace row: while a waybar on the machine
+draws the `niri/workspaces` module itself (in any `modules-<edge>` list of
+`~/.config/waybar/config`), the strip would only repeat the bar's chips, so it
+ends quietly instead of starting — the same pattern the toggle uses. Removing
+the module from the bar's config (and reloading the bar) brings the strip back
+on its next start; no settings change is needed for the switch, in either
+direction. A missing or unparseable waybar config means the bar shows no
+chips, so the strip runs.
+
 The strip is a small bar: one numbered chip per live workspace, labelled with
 the number niri displays. There is one strip **per monitor** — niri's numbering
 restarts at 1 on every screen, so a single shared row would show duplicate

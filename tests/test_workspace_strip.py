@@ -8,9 +8,11 @@ and they are the numbers the chips show and reorder accepts.
 """
 from pathlib import Path
 import json
+import os
 import runpy
 import tempfile
 import unittest
+from unittest.mock import patch
 
 helper = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'niri-workspace-strip'))
 
@@ -429,6 +431,75 @@ class ChipGeometryTests(unittest.TestCase):
         self.assertGreaterEqual(helper['CHIP_WIDTH'], 32)
         self.assertLessEqual(helper['MIN_HEIGHT'], helper['DEFAULT_HEIGHT'])
         self.assertLessEqual(helper['DEFAULT_HEIGHT'], helper['MAX_HEIGHT'])
+
+
+class WaybarSuppressionTests(unittest.TestCase):
+    """The strip is the fallback workspace row: it stays out of the way while
+    the waybar itself draws the niri/workspaces module, and runs whenever the
+    bar shows no chips (no bar, other modules only, or a broken config)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.dict(os.environ, dict(os.environ,
+                                              XDG_CONFIG_HOME=self.tmp.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.waybar_dir = Path(self.tmp.name, 'waybar')
+        self.waybar_dir.mkdir()
+        self.waybar_config = self.waybar_dir / 'config'
+
+    def write_config(self, data):
+        self.waybar_config.write_text(data)
+
+    def test_no_waybar_config_runs_the_strip(self):
+        self.assertFalse(helper['waybar_shows_workspaces']())
+
+    def test_config_directory_without_file_runs_the_strip(self):
+        self.assertFalse(helper['waybar_shows_workspaces']())
+
+    def test_module_on_any_edge_suppresses(self):
+        for edge in ('top', 'bottom', 'left', 'right', 'center'):
+            with self.subTest(edge=edge):
+                self.write_config(json.dumps(
+                    {'modules-' + edge: ['niri/workspaces', 'clock']}))
+                self.assertTrue(helper['waybar_shows_workspaces']())
+
+    def test_other_modules_only_do_not_suppress(self):
+        self.write_config(json.dumps({
+            'layer': 'top', 'position': 'top',
+            'modules-left': ['niri/window'],
+            'modules-center': ['work/custom-chips'],
+            'modules-right': ['network', 'clock', 'tray']}))
+        self.assertFalse(helper['waybar_shows_workspaces']())
+
+    def test_unparseable_config_does_not_suppress(self):
+        # A broken config means the bar shows no chips at all.
+        self.write_config('this is not json {')
+        self.assertFalse(helper['waybar_shows_workspaces']())
+
+    def test_non_list_modules_entry_does_not_suppress(self):
+        # The JSON parsed but the shape is wrong: not a module list.
+        self.write_config(json.dumps({'modules-top': 'niri/workspaces'}))
+        self.assertFalse(helper['waybar_shows_workspaces']())
+
+    def test_home_fallback_when_xdg_unset(self):
+        env = {k: v for k, v in os.environ.items() if k != 'XDG_CONFIG_HOME'}
+        patcher = patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        home = Path(self.tmp.name, 'home')
+        (home / '.config' / 'waybar').mkdir(parents=True)
+        (home / '.config' / 'waybar' / 'config').write_text(json.dumps(
+            {'modules-bottom': ['niri/workspaces']}))
+
+        class FakePath(Path):
+            @staticmethod
+            def home():
+                return home
+
+        self.addCleanup(patch_module('Path', FakePath))
+        self.assertTrue(helper['waybar_shows_workspaces']())
 
 
 if __name__ == '__main__':

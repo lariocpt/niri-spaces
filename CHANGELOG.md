@@ -28,6 +28,12 @@ section here. The tag being released must match the heading it releases.
 - `niri-spaces workspace-strip reorder FROM TO [OUTPUT]`: with per-monitor
   numbering two workspaces can both be *FROM*, so the optional output name
   says which monitor's workspace to move (otherwise the focused monitor's).
+- The strip is the fallback workspace row: while the machine's waybar draws
+  the `niri/workspaces` module, the strip ends quietly instead of duplicating
+  the bar's chips (a missing or unparseable waybar config does not suppress
+  it). Removing the module from the bar's config brings the strip back on its
+  next start — the one-shot `status` and `--check` say which way the strip
+  resolves either way.
 
 ### Changed
 - The strip reserves its own space (a layer exclusive zone) instead of

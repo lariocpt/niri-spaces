@@ -26,7 +26,15 @@ the list (the other workspaces shift) and the workspace's name — which is its
 color scheme — travels with it, so the color is preserved by construction.
 A plain click focuses that monitor and then the workspace.
 
-  niri-workspace-strip                    run the strips (settings must enable them)
+The strip is the fallback workspace row: while a waybar on the machine draws
+the niri/workspaces module (any modules-<edge> list of
+~/.config/waybar/config), the run form ends quietly so the two never
+duplicate each other; removing the module from the bar brings the strip back.
+A missing or unparseable waybar config does not suppress it.
+
+  niri-workspace-strip                    run the strips (settings must enable
+                                          them and the bar must not show the
+                                          niri/workspaces module)
   niri-workspace-strip --check            validate settings; no writes, no IPC
   niri-workspace-strip status             report the live chips per monitor
   niri-workspace-strip reorder FROM TO [OUTPUT]
@@ -132,6 +140,31 @@ def settings():
     if not 0 <= margin <= MAX_MARGIN:
         raise ValueError(f"workspace_strip_margin must be between 0 and {MAX_MARGIN}")
     return enabled, height, position, align, margin
+
+
+def waybar_shows_workspaces():
+    """Whether this machine's waybar already draws the niri/workspaces module.
+
+    While the bar shows the chips, the strip would be a duplicate of them, so
+    the daemon stays out of the way (the same quiet-exit pattern the toggle
+    uses). Removing the module from the bar's config — any modules-<edge>
+    list — brings the strip back; no settings change is needed for that. A
+    missing or unparseable config means the bar shows no chips, so the strip
+    runs."""
+    config_home = os.environ.get("XDG_CONFIG_HOME", "")
+    base = Path(config_home) if config_home else Path.home() / ".config"
+    path = base / "waybar" / "config"
+    if not path.is_file():
+        return False
+    try:
+        config = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    for key, modules in config.items():
+        if key.startswith("modules-") and isinstance(modules, list):
+            if any(m == "niri/workspaces" for m in modules if isinstance(m, str)):
+                return True
+    return False
 
 
 def normalize(scheme):
@@ -293,8 +326,13 @@ def cmd_status():
         raise SystemExit("workspace strip: niri is not reachable (NIRI_SOCKET?)")
     schemes = color_schemes()
     assignments = read_color_assignments()
-    print("workspace strip: enabled" if enabled
-          else "workspace strip: disabled (chips shown as the strip would draw them)")
+    if enabled and waybar_shows_workspaces():
+        print("workspace strip: enabled, but suppressed by the waybar's "
+              "niri/workspaces module (chips shown as the strip would draw them)")
+    elif enabled:
+        print("workspace strip: enabled")
+    else:
+        print("workspace strip: disabled (chips shown as the strip would draw them)")
     print(f"  position: {position}, align: {align}, margin: {margin}px "
           "(reserves space)")
     for output, group in group_by_output(live).items():
@@ -918,7 +956,12 @@ def main():
     except (OSError, ValueError, TypeError) as error:
         raise SystemExit(f"workspace strip: invalid settings: {error}") from error
     if args.check:
-        if enabled:
+        if enabled and waybar_shows_workspaces():
+            log(f"enabled but suppressed: the waybar already shows the "
+                f"niri/workspaces chips — the strip will not start "
+                f"(remove the module from the waybar config to start it); "
+                f"would be height {height}px, {position}/{align}, margin {margin}px")
+        elif enabled:
             log(f"enabled, height {height}px, {position}/{align}, margin {margin}px "
                 "(reserves space, one strip per monitor)")
         else:
@@ -947,6 +990,13 @@ def main():
             raise SystemExit("usage: niri-workspace-strip reorder FROM TO [OUTPUT]")
         output = args.args[2] if len(args.args) == 3 else None
         cmd_reorder(int(args.args[0]), int(args.args[1]), output)
+        return
+    if waybar_shows_workspaces():
+        # The bar's chips are the workspace row; a second, dragging one would
+        # only repeat them. One-shot commands above still answer.
+        log("suppressed: the waybar already shows the niri/workspaces chips — "
+            "the strip stays out of the way; remove the module from the "
+            "waybar config and reload the bar to start it")
         return
     daemon(height, position, align, margin, color_schemes(), read_color_assignments())
 
