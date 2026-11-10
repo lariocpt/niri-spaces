@@ -9,6 +9,49 @@ The `## [X.Y.Z]` heading shape is load-bearing, not a style choice:
 next to use as the GitHub Release notes, and refuses to publish a tag that has no
 section here. The tag being released must match the heading it releases.
 
+## [0.6.0] - 2026-11-10
+
+### Added
+- One workspace strip per monitor. Niri numbers workspaces from 1 on every
+  screen, so a single shared row showed duplicate numbers; each connected
+  display now gets its own layer surface on its own monitor, rebuilt live as
+  displays are plugged in and out (a screen's workspaces collapse onto the
+  remaining monitor and their chips follow). The output-to-monitor mapping is
+  generic for any number and kind of screens: connector name first, then
+  one-to-one EDID identity (two identical models still each get a strip),
+  then a single-leftover fallback; an unmappable output waits, never steals.
+- Strip placement settings: `workspace_strip_position` (`"top"` default or
+  `"bottom"`) and `workspace_strip_align` (`"left"`, `"center"` default,
+  `"right"`); a centered row re-centers itself as chips come and go. The
+  older `workspace_strip_margin_top` is accepted as the former name of
+  `workspace_strip_margin`.
+- `niri-spaces workspace-strip reorder FROM TO [OUTPUT]`: with per-monitor
+  numbering two workspaces can both be *FROM*, so the optional output name
+  says which monitor's workspace to move (otherwise the focused monitor's).
+
+### Changed
+- The strip reserves its own space (a layer exclusive zone) instead of
+  floating over the panels, so it can never hide what is under it.
+- Drag-to-reorder actually follows the pointer: the first motion past the
+  threshold takes a seat grab, the lifted chip is painted inverted at an
+  open insertion gap that travels with the pointer, and the release drops
+  the workspace onto that gap. Previously the drag silently died as soon as
+  the pointer left the strip's own window.
+- Every index-addressed action (`focus-workspace`,
+  `set/unset-workspace-name`, `move-workspace-to-index`) is now preceded by
+  a `focus-monitor` for the target's screen: niri resolves workspace indexes
+  against the *focused* monitor, so on a second screen an index would hit a
+  different workspace. Un-names go by the unique scheme name instead.
+
+### Fixed
+- Ghost workspaces. Closing every app on a managed workspace and switching
+  away now takes its scheme back — the watcher un-names the empty
+  workspace, niri destroys it, and its include entry is pruned in the same
+  pass — instead of pinning it to life forever as a colored, empty, numbered
+  chip. The one spare per monitor stays unnamed and belongs to no scheme.
+- Workspaces on a second monitor are no longer renamed or reordered against
+  the wrong screen (same root cause as the index addressing above).
+
 ## [0.5.0] - 2026-11-09
 
 ### Added

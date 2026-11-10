@@ -284,12 +284,18 @@ def pick_scheme(assignment, schemes, taken, cursor, rng=random, primary=None):
 def name_workspace(idx, scheme, request=msg):
     """Name the workspace at the displayed index. The index is exactly the
     1-based number niri shows and reports; niri ignores the rename when another
-    workspace already bears the name, so this can never create a duplicate."""
+    workspace already bears the name, so this can never create a duplicate.
+    Niri resolves a workspace index against the FOCUSED monitor, so the
+    caller must first aim the focus at the target's monitor (Reconciler._aim)."""
     request("action", "set-workspace-name", scheme, "--workspace", str(idx))
 
 
-def unname_workspace(idx, request=msg):
-    request("action", "unset-workspace-name", str(idx))
+def unname_workspace(ref, request=msg):
+    """Un-name one workspace by reference. Scheme names are unique across the
+    session, so an unname by name needs no monitor aiming and can never hit
+    a same-index workspace on another screen; an index reference resolves
+    against the focused monitor."""
+    request("action", "unset-workspace-name", str(ref))
 
 
 class Reconciler:
@@ -329,6 +335,18 @@ class Reconciler:
     def _note(self, *args):
         self.events.append(args)
         return self.request(*args)
+
+    def _aim(self, ws):
+        """Point niri's index actions at this workspace's monitor first: a
+        workspace index resolves against the FOCUSED monitor, so on a second
+        screen its idx would otherwise hit a different workspace entirely."""
+        output = ws.get("output")
+        if not output:
+            return
+        focused = next((w for w in self.snapshot if w.get("is_focused")), None)
+        if focused is not None and focused.get("output") == output:
+            return
+        self._note("action", "focus-monitor", output)
 
     def _write(self, entries):
         """Install the include file, validating the text unless this exact text
@@ -382,7 +400,9 @@ class Reconciler:
                     # re-adopt it so its colors keep working.
                     kept[ident] = ws["name"]
                 else:
-                    unname_workspace(ws["idx"], self._note)
+                    # A ghost niri re-created from the include file: un-name
+                    # it (by name: index actions hit the focused monitor).
+                    unname_workspace(ws["name"], self._note)
                     state["excluded"].append(ident)
             elif ident not in state["excluded"]:
                 state["excluded"].append(ident)
@@ -444,6 +464,13 @@ class Reconciler:
             if ws["name"] is not None:
                 state["excluded"].append(ident)
                 continue
+            if ws.get("active_window_id") is None and not ws.get("is_focused"):
+                # An empty, unfocused unnamed workspace is some monitor's
+                # spare. A scheme would make it immortal (a named empty
+                # workspace survives), and the sweep below would have to
+                # kill it again — a rename/unname loop. Spares stay on the
+                # machine theme until they hold a window or the focus.
+                continue
             taken = (self._bearers()
                      | {p["scheme"] for p in state["pending"].values()})
             scheme, state["cursor"] = pick_scheme(
@@ -451,6 +478,7 @@ class Reconciler:
                 taken, state["cursor"], primary=self.primary)
             state["pending"][ident] = {"scheme": scheme, "attempts": 1}
             just_created.add(ident)
+            self._aim(ws)
             name_workspace(ws["idx"], scheme, self._note)
 
         # Pending renames: confirm, or give up. niri ignores a rename whose
@@ -479,11 +507,47 @@ class Reconciler:
                           None)
             if holder is None and ws["name"] is None and pending["attempts"] < 2:
                 pending["attempts"] += 1
+                self._aim(ws)
                 name_workspace(ws["idx"], pending["scheme"], self._note)
                 continue
             # Held by another workspace, or the retry budget is spent: hand
             # the target back, leaving the holder alone.
             del state["pending"][ident]
+            if ident not in state["excluded"]:
+                state["excluded"].append(ident)
+
+        # Ghost sweep: a managed workspace that is empty and not focused
+        # dies. Named workspaces are pinned to life by niri (it only ever
+        # destroys an UNNAMED empty workspace losing focus), and our include
+        # entry would even re-create one on every config reload — so the
+        # watcher un-names them here. Niri then removes the empty workspace
+        # the moment focus settles elsewhere, the assignments above are gone,
+        # and the entry section below prunes the scheme in this same pass
+        # (no live bearer, no entry). Only unnamed workspaces may exist
+        # empty: the one spare per monitor is exactly one, not one per
+        # scheme ever handed out.
+        for ws in self.snapshot:
+            ident = str(ws["id"])
+            if (ident not in state["assignments"]
+                    and ident not in state["pending"]):
+                continue
+            if ident in just_created:
+                # Born this pass (possibly just named): its fate is decided
+                # with the next event, not while the snapshot predates the
+                # rename.
+                continue
+            if ws.get("is_focused") or ws.get("active_window_id") is not None:
+                continue
+            name = state["assignments"].get(ident) or state["pending"][ident]["scheme"]
+            if ws["name"] == name:
+                # By name: ghosts sit on any monitor, and an index would
+                # resolve against whichever one holds the focus right now.
+                unname_workspace(name, self._note)
+            state["assignments"].pop(ident, None)
+            state["pending"].pop(ident, None)
+            # Excluded, not forgotten: if niri keeps this empty workspace
+            # (it is the monitor's only one), the next pass must treat it as
+            # the user's plain workspace, not rename it as a newcomer.
             if ident not in state["excluded"]:
                 state["excluded"].append(ident)
 
@@ -529,7 +593,8 @@ class Reconciler:
                 name = self.state["assignments"].get(ident) \
                     or self.state["pending"][ident]["scheme"]
                 if ws["name"] == name:
-                    unname_workspace(ws["idx"], self._note)
+                    # By name: cleared workspaces live on any monitor.
+                    unname_workspace(name, self._note)
                 # Excluded, not just un-named: the next reconcile must not
                 # mistake the now-plain workspace for a new one.
                 if ident not in self.state["excluded"]:
@@ -574,6 +639,7 @@ class Reconciler:
         candidate[scheme] = self.schemes[scheme]
         self._prevalidated = render_include(candidate)
         self.validator(self._prevalidated)
+        self._aim(target)
         name_workspace(target["idx"], scheme, self._note)
         self.state["assignments"][ident] = scheme
 

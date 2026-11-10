@@ -15,8 +15,8 @@ import unittest
 helper = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'niri-workspace-strip'))
 
 
-def ws(ident, idx, name=None, focused=False, window=None):
-    return dict(id=ident, idx=idx, name=name, output='eDP-1', is_urgent=False,
+def ws(ident, idx, name=None, focused=False, window=None, output='eDP-1'):
+    return dict(id=ident, idx=idx, name=name, output=output, is_urgent=False,
                 is_active=focused, is_focused=focused, active_window_id=window)
 
 
@@ -53,14 +53,27 @@ class ConfigTestCase(unittest.TestCase):
 
 class SettingsTests(ConfigTestCase):
     def test_defaults(self):
-        # No file at all: disabled, 30px, flush corner.
-        self.assertEqual(helper['settings'](), (False, 30, 0))
+        # No file at all: disabled, 30px, top edge, centered, no margin.
+        self.assertEqual(helper['settings'](), (False, 30, 'top', 'center', 0))
 
     def test_enabled_and_custom_geometry(self):
         self.write_settings({'workspace_strip': True,
                              'workspace_strip_height': 48,
+                             'workspace_strip_position': 'bottom',
+                             'workspace_strip_align': 'right',
+                             'workspace_strip_margin': 26})
+        self.assertEqual(helper['settings'](), (True, 48, 'bottom', 'right', 26))
+
+    def test_legacy_margin_top_is_still_honored(self):
+        # 0.5.x configs only knew a top margin; the generically renamed key
+        # wins when both are present.
+        self.write_settings({'workspace_strip': True,
                              'workspace_strip_margin_top': 26})
-        self.assertEqual(helper['settings'](), (True, 48, 26))
+        self.assertEqual(helper['settings']()[4], 26)
+        self.write_settings({'workspace_strip': True,
+                             'workspace_strip_margin_top': 26,
+                             'workspace_strip_margin': 4})
+        self.assertEqual(helper['settings']()[4], 4)
 
     def test_string_toggle_is_rejected(self):
         self.write_settings({'workspace_strip': 'yes'})
@@ -74,13 +87,16 @@ class SettingsTests(ConfigTestCase):
                 helper['settings']()
 
     def test_margin_out_of_range_is_rejected(self):
-        self.write_settings({'workspace_strip': True,
-                             'workspace_strip_margin_top': helper['MAX_MARGIN_TOP'] + 1})
+        for bad in (-1, helper['MAX_MARGIN'] + 1):
+            self.write_settings({'workspace_strip': True, 'workspace_strip_margin': bad})
+            with self.assertRaises(ValueError):
+                helper['settings']()
+
+    def test_position_and_align_are_enumerated(self):
+        self.write_settings({'workspace_strip': True, 'workspace_strip_position': 'middle'})
         with self.assertRaises(ValueError):
             helper['settings']()
-
-    def test_negative_margin_is_rejected(self):
-        self.write_settings({'workspace_strip': True, 'workspace_strip_margin_top': -1})
+        self.write_settings({'workspace_strip': True, 'workspace_strip_align': 'justify'})
         with self.assertRaises(ValueError):
             helper['settings']()
 
@@ -160,17 +176,6 @@ class OrderingTests(unittest.TestCase):
 
 
 class ReorderTests(unittest.TestCase):
-    def test_drag_emits_one_reference_move(self):
-        # The exact wire form verified against niri 26.04: move chip i onto
-        # column j. The name (the color) travels with the workspace.
-        self.assertEqual(
-            helper['reorder_args'](3, 5),
-            ['action', 'move-workspace-to-index', '5', '--reference', '3'])
-
-    def test_same_position_is_a_refused_no_op(self):
-        with self.assertRaises(ValueError):
-            helper['reorder_args'](4, 4)
-
     def test_reference_lookup_uses_the_displayed_index(self):
         live = [ws(1, 1), ws(5, 2, name='yellow'), ws(6, 3, name='purple')]
         self.assertEqual(helper['reorder_reference'](live, 2)['id'], 5)
@@ -182,15 +187,46 @@ class ReorderTests(unittest.TestCase):
         self.addCleanup(patch_module('workspaces', helper['workspaces']))
         patch_module('workspaces', lambda request=None: list(live))
         self.addCleanup(patch_module('settings', helper['settings']))
-        patch_module('settings', lambda: (True, 30, 0))
+        patch_module('settings', lambda: (True, 30, 'top', 'center', 0))
 
-    def test_cmd_reorder_moves_the_workspace_at_from(self):
+    def capture_msg(self):
         calls = []
-        self.stub_live([ws(1, 1), ws(5, 2, name='yellow'), ws(6, 3, name='purple')])
         patch_module('msg', lambda *args: calls.append(list(args)) or '')
+        return calls
+
+    def test_cmd_reorder_aims_the_monitor_then_moves(self):
+        # Index actions resolve against the FOCUSED monitor, so the CLI aims
+        # at the target's screen first; the move itself is the reference
+        # form verified against niri 26.04, and the name (the color) travels
+        # with the workspace.
+        self.stub_live([ws(1, 1), ws(5, 2, name='yellow'), ws(6, 3, name='purple')])
+        calls = self.capture_msg()
         helper['cmd_reorder'](2, 3)
-        self.assertEqual(calls, [['action', 'move-workspace-to-index',
-                                  '3', '--reference', '2']])
+        self.assertEqual(calls, [
+            ['action', 'focus-monitor', 'eDP-1'],
+            ['action', 'move-workspace-to-index', '3', '--reference', '2']])
+
+    def test_cmd_reorder_reads_the_focused_monitor_when_indexes_repeat(self):
+        # Both screens number a workspace 2: an unqualified FROM means the
+        # focused monitor's workspace 2, never the other one.
+        self.stub_live([ws(1, 1), ws(5, 2, name='yellow'),
+                        ws(9, 2, name='teal', focused=True, output='HDMI-A-1'),
+                        ws(10, 3, output='HDMI-A-1')])
+        calls = self.capture_msg()
+        helper['cmd_reorder'](2, 3)
+        self.assertEqual(calls, [
+            ['action', 'focus-monitor', 'HDMI-A-1'],
+            ['action', 'move-workspace-to-index', '3', '--reference', '2']])
+
+    def test_cmd_reorder_with_an_explicit_output(self):
+        self.stub_live([ws(1, 1, focused=True), ws(5, 2, name='yellow'),
+                        ws(9, 1, output='HDMI-A-1'),
+                        ws(10, 2, name='teal', output='HDMI-A-1')])
+        calls = self.capture_msg()
+        helper['cmd_reorder'](2, 1, 'HDMI-A-1')
+        self.assertEqual(calls, [
+            ['action', 'focus-monitor', 'HDMI-A-1'],
+            ['action', 'move-workspace-to-index', '1', '--reference', '2']])
 
     def test_cmd_reorder_refuses_an_empty_slot(self):
         self.stub_live([ws(1, 1), ws(5, 2, name='yellow')])
@@ -203,6 +239,146 @@ class ReorderTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught:
             helper['cmd_reorder'](2, 2)
         self.assertIn('already at that position', str(caught.exception))
+
+
+class GroupingTests(unittest.TestCase):
+    """One strip per monitor: the per-monitor grouping is the whole basis
+    of the layout, and niri's numbering restarts at 1 on every screen."""
+
+    def test_workspaces_group_per_monitor_and_keep_their_numbering(self):
+        live = [ws(1, 2), ws(2, 1),
+                ws(3, 2, output='HDMI-A-1'), ws(4, 1, output='HDMI-A-1')]
+        groups = helper['group_by_output'](live)
+        self.assertEqual(sorted(groups), ['HDMI-A-1', 'eDP-1'])
+        self.assertEqual([w['id'] for w in groups['eDP-1']], [2, 1])
+        self.assertEqual([w['id'] for w in groups['HDMI-A-1']], [4, 3])
+
+    def test_duplicate_indexes_never_share_a_row(self):
+        # The duplicate-"1" chips bug: two monitors each had a workspace 1
+        # and one strip drew both. Grouping must keep them apart.
+        live = [ws(1, 1, focused=True), ws(2, 1, output='HDMI-A-1')]
+        for group in helper['group_by_output'](live).values():
+            self.assertEqual([w['idx'] for w in group], [1])
+            self.assertEqual(len(group), 1)
+
+    def test_focused_output_reads_the_focused_workspace(self):
+        self.assertIsNone(helper['focused_output']([ws(1, 1)]))
+        self.assertEqual(
+            helper['focused_output']([ws(1, 1), ws(2, 1, focused=True, output='HDMI-A-1')]),
+            'HDMI-A-1')
+
+
+class FakeMonitor:
+    """The three GdkMonitor getters assign_monitors consults."""
+
+    def __init__(self, connector=None, manufacturer=None, model=None):
+        self._connector, self._manufacturer, self._model = connector, manufacturer, model
+
+    def get_connector(self):
+        return self._connector
+
+    def get_manufacturer(self):
+        return self._manufacturer
+
+    def get_model(self):
+        return self._model
+
+
+class MonitorAssignmentTests(unittest.TestCase):
+    """Output set -> GdkMonitor for any number and kind of screens: nothing
+    in the mapping may know what eDP or HDMI mean specifically."""
+
+    @staticmethod
+    def outputs(*specs):
+        return {name: {'name': name, 'make': make, 'model': model}
+                for name, make, model in specs}
+
+    def test_connector_names_match_exactly_whatever_the_order(self):
+        outputs = self.outputs(('eDP-1', 'Japan Display Inc.', 'GPD1001H'),
+                               ('HDMI-A-1', 'Samsung Electric Company', 'U28E590'))
+        monitors = [FakeMonitor('HDMI-A-1'), FakeMonitor('eDP-1')]  # GDK order differs
+        mapping = helper['assign_monitors'](outputs, monitors)
+        self.assertEqual(mapping, {'eDP-1': monitors[1], 'HDMI-A-1': monitors[0]})
+
+    def test_identical_models_each_get_their_own_monitor(self):
+        # Two same-model screens share one EDID identity. With no connector
+        # strings to break the tie, the EDID pass must hand out the two
+        # GdkMonitors one-to-one instead of double-booking the first.
+        outputs = self.outputs(('DP-1', 'ACME', 'X1'), ('DP-2', 'ACME', 'X1'))
+        monitors = [FakeMonitor(model='X1', manufacturer='ACME'),
+                    FakeMonitor(model='X1', manufacturer='ACME')]
+        mapping = helper['assign_monitors'](outputs, monitors)
+        self.assertEqual(len(mapping), 2)
+        self.assertIsNot(mapping['DP-1'], mapping['DP-2'])
+
+    def test_edid_identity_is_the_fallback_when_connectors_disagree(self):
+        outputs = self.outputs(('DP-3', 'ACME', 'X1'))
+        monitors = [FakeMonitor('DP-9', 'ACME', 'X1')]
+        self.assertEqual(helper['assign_monitors'](outputs, monitors),
+                         {'DP-3': monitors[0]})
+
+    def test_panel_without_edid_details_matches_when_alone(self):
+        # A screen reporting neither connector nor EDID still gets its strip
+        # — but only while it is unambiguous: one output, one monitor.
+        outputs = {'LVDS-1': {'name': 'LVDS-1'}}
+        monitors = [FakeMonitor()]
+        self.assertEqual(helper['assign_monitors'](outputs, monitors),
+                         {'LVDS-1': monitors[0]})
+
+    def test_unmappable_output_is_left_unmapped_not_guessed_at(self):
+        # GDK has enumerated one monitor while niri reports two (a hotplug
+        # mid-flight): the second output must wait, never steal a monitor.
+        outputs = self.outputs(('DP-1', 'ACME', 'X1'), ('DP-2', 'ACME', 'X2'))
+        monitors = [FakeMonitor('DP-1', 'ACME', 'X1')]
+        self.assertEqual(list(helper['assign_monitors'](outputs, monitors)), ['DP-1'])
+
+
+class DragRowTests(unittest.TestCase):
+    """The drag's row arithmetic — which slot holds what, how wide the row
+    is — is pure computation; the GTK painting only draws its answer."""
+
+    def make_strip(self, n=3):
+        strip = helper['MonitorStrip']('eDP-1', None, None, None, None)
+        strip.group = [ws(i, i) for i in range(1, n + 1)]
+        return strip
+
+    def test_plain_row_is_the_group_untouched(self):
+        strip = self.make_strip()
+        self.assertEqual(strip.row_layout(), [(w, False) for w in strip.group])
+        self.assertEqual(strip.width(), 3 * helper['CHIP_WIDTH'])
+
+    def test_press_without_motion_is_not_a_drag(self):
+        strip = self.make_strip()
+        strip.drag = {'ws': strip.group[0], 'x0': 4, 'y0': 4, 'moved': False, 'gap': 0}
+        self.assertEqual(strip.row_layout(), [(w, False) for w in strip.group])
+        self.assertEqual(strip.width(), 3 * helper['CHIP_WIDTH'])
+
+    def test_lifted_chip_travels_and_the_row_keeps_every_slot(self):
+        strip = self.make_strip()
+        strip.drag = {'ws': strip.group[0], 'x0': 0, 'y0': 0, 'moved': True, 'gap': 2}
+        row = strip.row_layout()
+        self.assertEqual(len(row), 3)  # a chip lifts, it never vanishes
+        self.assertEqual([(w['id'], gap) for w, gap in row],
+                         [(2, False), (3, False), (1, True)])
+        self.assertEqual(strip.width(), 3 * helper['CHIP_WIDTH'] + helper['GAP_EXTRA'])
+
+    def test_gap_opens_at_exactly_one_slot(self):
+        strip = self.make_strip()
+        source = strip.group[1]
+        for gap in range(3):
+            strip.drag = {'ws': source, 'x0': 0, 'y0': 0, 'moved': True, 'gap': gap}
+            row = strip.row_layout()
+            self.assertEqual([pos for pos, (w, is_gap) in enumerate(row) if is_gap], [gap])
+            self.assertEqual([w['id'] for w, is_gap in row if not is_gap], [1, 3])
+
+    def test_slot_at_clamps_events_outside_the_row(self):
+        # During a pointer grab motions arrive far outside the window; the
+        # hit test must saturate at the first/last slot, never return None.
+        strip = self.make_strip()
+        strip.slots = [(0, 44, 0), (44, 88, 1), (88, 132, 2)]
+        self.assertEqual(strip.slot_at(-500), 0)
+        self.assertEqual(strip.slot_at(60), 1)
+        self.assertEqual(strip.slot_at(9999), 2)
 
 
 class ChipGeometryTests(unittest.TestCase):

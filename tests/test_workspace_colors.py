@@ -96,9 +96,11 @@ class ReconcileCase(unittest.TestCase):
 
     def new_workspace_events(self):
         """Event 1 holds only the pre-existing workspace; event 2 adds the
-        newcomer, which is exactly when a scheme may be assigned."""
+        newcomer, which is exactly when a scheme may be assigned. A new
+        workspace is focused (the user just switched to it): an empty,
+        unfocused one would be a spare the watcher must not name."""
         self.reconciler.observe(changed(ws(1, 1, window=10)))
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2)))
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, focused=True)))
 
 
 class Startup(ReconcileCase):
@@ -123,7 +125,9 @@ class Startup(ReconcileCase):
         # drop its entry so the next reload removes the name entirely.
         self.include.write_text(helper['render_include']({'teal': helper['SCHEMES'][0]}))
         self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal')))
-        self.assertIn(('action', 'unset-workspace-name', '2'), self.fake.calls)
+        # By name, not by index: an index reference would resolve against
+        # whichever monitor holds the focus.
+        self.assertIn(('action', 'unset-workspace-name', 'teal'), self.fake.calls)
         self.assertEqual(self.entries(), set())
         self.assertNotIn('2', helper['load_state']()['assignments'])
 
@@ -134,7 +138,7 @@ class Startup(ReconcileCase):
             ws(1, 1, 'teal', window=10), ws(2, 2, 'purple')))
         state = helper['load_state']()
         self.assertEqual(state['assignments'], {'1': 'teal'})
-        self.assertIn(('action', 'unset-workspace-name', '2'), self.fake.calls)
+        self.assertIn(('action', 'unset-workspace-name', 'purple'), self.fake.calls)
         self.assertEqual(self.entries(), {'teal'})
 
     def test_excluded_workspace_renamed_to_scheme_name_is_adopted(self):
@@ -144,7 +148,9 @@ class Startup(ReconcileCase):
         state['excluded'] = ['2']
         helper['save_state'](state)
         self.reconciler.state = state
-        self.reconciler.observe(changed(ws(2, 2, 'teal')))
+        # Focused and windowed: an adopted workspace the sweep would leave
+        # alone must be a workspace the user actually occupies.
+        self.reconciler.observe(changed(ws(2, 2, 'teal', window=5, focused=True)))
         self.assertEqual(helper['load_state']()['assignments'], {'2': 'teal'})
         self.assertEqual(self.entries(), {'teal'})
 
@@ -163,8 +169,9 @@ class Lifecycle(ReconcileCase):
         self.assertIn(('action', 'set-workspace-name', 'teal', '--workspace', '2'),
                       self.fake.calls)
         # The rename lands in the next event; the entry is written then, while
-        # the workspace bears the name.
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal')))
+        # the workspace bears the name (and holds the focus — it is where the
+        # user just arrived).
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal', focused=True)))
         state = helper['load_state']()
         self.assertEqual(state['assignments'], {'2': 'teal'})
         self.assertEqual(state['pending'], {})
@@ -180,17 +187,20 @@ class Lifecycle(ReconcileCase):
 
     def test_next_workspaces_get_distinct_schemes(self):
         self.new_workspace_events()
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal'),
-                                        ws(3, 3)))
+        # ws2 keeps a window once named (the user opened something there),
+        # and ws3 arrives focused: neither is sweepable, so both live long
+        # enough to prove the schemes stay distinct.
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal', window=20),
+                                        ws(3, 3, focused=True)))
         self.assertIn(('action', 'set-workspace-name', 'purple', '--workspace', '3'),
                       self.fake.calls)
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal'),
-                                        ws(3, 3, 'purple')))
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal', window=20),
+                                        ws(3, 3, 'purple', focused=True)))
         self.assertEqual(self.entries(), {'teal', 'purple'})
 
     def test_destroyed_workspace_prunes_assignment_and_entry(self):
         self.new_workspace_events()
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal')))
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal', focused=True)))
         self.reconciler.observe(changed(ws(1, 1, window=10)))
         state = helper['load_state']()
         self.assertEqual(state['assignments'], {})
@@ -198,8 +208,8 @@ class Lifecycle(ReconcileCase):
 
     def test_user_renamed_workspace_is_handed_back(self):
         self.new_workspace_events()
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal')))
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'mail')))
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal', focused=True)))
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'mail', focused=True)))
         state = helper['load_state']()
         self.assertEqual(state['assignments'], {})
         self.assertIn('2', state['excluded'])
@@ -207,14 +217,14 @@ class Lifecycle(ReconcileCase):
 
     def test_hand_back_workspace_never_renamed_again(self):
         self.new_workspace_events()
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal')))
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'mail')))
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal', focused=True)))
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'mail', focused=True)))
         # ws3 is brand new: with the cursor at position 1 it receives purple.
         self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'mail'),
-                                        ws(3, 3)))
+                                        ws(3, 3, focused=True)))
         # The rename of ws3 lands in the next event, which confirms it.
         self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'mail'),
-                                        ws(3, 3, 'purple')))
+                                        ws(3, 3, 'purple', focused=True)))
         state = helper['load_state']()
         self.assertEqual(state['excluded'], ['1', '2'])
         self.assertEqual(state['assignments'], {'3': 'purple'})
@@ -231,8 +241,8 @@ class Lifecycle(ReconcileCase):
         # workspace "teal" before the confirmation: the helper must give up,
         # never un-naming the user's workspace.
         self.reconciler.observe(changed(ws(1, 1, window=10)))
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2)))
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2),
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, focused=True)))
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, focused=True),
                                         ws(4, 4, 'teal', window=20)))
         state = helper['load_state']()
         self.assertEqual(state['assignments'], {})
@@ -243,11 +253,11 @@ class Lifecycle(ReconcileCase):
 
     def test_unconfirmable_rename_is_given_up_after_two_attempts(self):
         self.reconciler.observe(changed(ws(1, 1, window=10)))
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2)))
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, focused=True)))
         # The rename never lands and nobody holds the name: one retry, then
         # the workspace is handed back untouched.
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2)))
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2)))
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, focused=True)))
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, focused=True)))
         state = helper['load_state']()
         self.assertEqual(state['pending'], {})
         self.assertIn('2', state['excluded'])
@@ -258,12 +268,12 @@ class Lifecycle(ReconcileCase):
 
     def test_config_reload_failure_forces_rewrite(self):
         self.new_workspace_events()
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal')))
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal', focused=True)))
         self.assertEqual(len(self.reconciler.writes), 1)
         # The file is intact and matches, but niri reports a failed reload:
         # the entries are rewritten from state anyway so the two reconverge.
         self.reconciler.observe({'ConfigLoaded': {'failed': True}})
-        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal')))
+        self.reconciler.observe(changed(ws(1, 1, window=10), ws(2, 2, 'teal', focused=True)))
         self.assertEqual(len(self.reconciler.writes), 2)
         self.assertEqual(self.entries(), {'teal'})
 
@@ -273,7 +283,7 @@ class RandomAssignment(ReconcileCase):
         self.reconciler.assignment = 'random'
         self.reconciler.observe(changed(ws(1, 1, 'teal', window=10)))
         self.reconciler.observe(changed(ws(1, 1, 'teal', window=10),
-                                        ws(2, 2), ws(3, 3)))
+                                        ws(2, 2, focused=True), ws(3, 3, window=30)))
         schemes = [c[2] for c in self.fake.calls
                    if c[:2] == ('action', 'set-workspace-name')]
         self.assertEqual(len(schemes), 2)
@@ -292,9 +302,9 @@ class RandomAssignment(ReconcileCase):
                  for i, s in enumerate(helper['SCHEMES'])]
         extras = {s['name'] for s in helper['EXTRA_SCHEMES']}
         self.reconciler.observe(changed(*taken))
-        self.reconciler.observe(changed(*taken, ws(99, 9)))
-        self.reconciler.observe(changed(*taken, ws(99, 9)))
-        self.reconciler.observe(changed(*taken, ws(99, 9)))
+        self.reconciler.observe(changed(*taken, ws(99, 9, focused=True)))
+        self.reconciler.observe(changed(*taken, ws(99, 9, focused=True)))
+        self.reconciler.observe(changed(*taken, ws(99, 9, focused=True)))
         state = helper['load_state']()
         renames = [c[2] for c in self.fake.calls
                    if c[:2] == ('action', 'set-workspace-name')]
@@ -319,8 +329,8 @@ class RandomAssignment(ReconcileCase):
         taken = [ws(i + 1, i + 1, s['name'], window=i)
                  for i, s in enumerate(pool)]
         self.reconciler.observe(changed(*taken))
-        self.reconciler.observe(changed(*taken, ws(99, 17)))
-        self.reconciler.observe(changed(*taken, ws(99, 17)))
+        self.reconciler.observe(changed(*taken, ws(99, 17, focused=True)))
+        self.reconciler.observe(changed(*taken, ws(99, 17, focused=True)))
         state = helper['load_state']()
         self.assertNotIn('99', state['assignments'])
         self.assertIn('99', state['excluded'])
@@ -343,8 +353,10 @@ class OneShot(ReconcileCase):
 
     def test_recolor_by_index_swaps_entry_in_one_write(self):
         self.managed(cursor=2)
-        before = [ws(1, 1, window=10), ws(2, 2, 'teal', window=11), ws(3, 3, 'purple')]
-        after = [ws(1, 1, window=10), ws(2, 2, 'neon', window=11), ws(3, 3, 'purple')]
+        before = [ws(1, 1, window=10), ws(2, 2, 'teal', window=11),
+                  ws(3, 3, 'purple', focused=True)]
+        after = [ws(1, 1, window=10), ws(2, 2, 'neon', window=11),
+                 ws(3, 3, 'purple', focused=True)]
         self.fake.snapshots = [before, after]
         helper['one_shot'](self.reconciler, 'recolor', '2')
         state = helper['load_state']()
@@ -357,8 +369,10 @@ class OneShot(ReconcileCase):
 
     def test_recolor_by_name(self):
         self.managed(cursor=3)
-        before = [ws(1, 1, window=10), ws(2, 2, 'teal', window=11), ws(3, 3, 'purple')]
-        after = [ws(1, 1, window=10), ws(2, 2, 'yellow', window=11), ws(3, 3, 'purple')]
+        before = [ws(1, 1, window=10), ws(2, 2, 'teal', window=11),
+                  ws(3, 3, 'purple', focused=True)]
+        after = [ws(1, 1, window=10), ws(2, 2, 'yellow', window=11),
+                 ws(3, 3, 'purple', focused=True)]
         self.fake.snapshots = [before, after]
         helper['one_shot'](self.reconciler, 'recolor', 'teal')
         self.assertEqual(helper['load_state']()['assignments'],
@@ -383,17 +397,19 @@ class OneShot(ReconcileCase):
         state = helper['load_state']()
         self.assertEqual(state['assignments'], {})
         self.assertEqual(state['pending'], {})
-        self.assertIn(('action', 'unset-workspace-name', '2'), self.fake.calls)
-        self.assertIn(('action', 'unset-workspace-name', '3'), self.fake.calls)
+        # Un-names go by name: index references resolve against the
+        # focused monitor, and cleared workspaces live on any screen.
+        self.assertIn(('action', 'unset-workspace-name', 'teal'), self.fake.calls)
+        self.assertIn(('action', 'unset-workspace-name', 'purple'), self.fake.calls)
         self.assertNotIn(('action', 'unset-workspace-name', '1'), self.fake.calls)
         self.assertEqual(self.entries(), set())
 
     def test_queued_command_runs_against_fresh_snapshot(self):
         self.managed(cursor=2)
         before = [ws(1, 1, window=10), ws(2, 2, 'teal', window=11),
-                  ws(3, 3, 'purple')]
+                  ws(3, 3, 'purple', focused=True)]
         after = [ws(1, 1, window=10), ws(2, 2, 'neon', window=11),
-                 ws(3, 3, 'purple')]
+                 ws(3, 3, 'purple', focused=True)]
         self.fake.snapshots = [before, after]
         state = helper['load_state']()
         state['command'] = {'op': 'recolor', 'ref': '2'}

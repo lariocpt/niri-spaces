@@ -100,7 +100,7 @@ niri-spaces menu                    pick a space from a numbered popup list (fuz
 niri-spaces list                    list available spaces and templates
 niri-spaces terminal-pairs [--check] run the optional 50/50 terminal watcher
 niri-spaces workspace-colors [--check] run the optional per-workspace color scheme watcher
-niri-spaces workspace-strip [--check | status | reorder FROM TO] the optional coloured workspace strip
+niri-spaces workspace-strip [--check | status | reorder FROM TO [OUTPUT]] the optional coloured workspace strip
 niri-spaces session [--check | status | restore [--dry-run]] the optional session snapshot & restore
 ```
 
@@ -108,7 +108,7 @@ The optional `terminal-pairs` subcommand runs the terminal watcher. The optional
 `workspace-colors` subcommand runs the color scheme watcher (or its one-shot
 `status`, `recolor` and `clear` forms — see below). The optional `workspace-strip`
 subcommand runs the coloured workspace strip (or its one-shot `status` and
-`reorder FROM TO` forms — see below). The optional `session` subcommand runs the
+`reorder FROM TO [OUTPUT]` forms — see below). The optional `session` subcommand runs the
 session snapshot daemon (or its one-shot `status` and `restore` forms — see
 below). `start` runs each `load` line in
 `autostart` in order, launches the enabled watchers, and finishes by focusing workspace 1.
@@ -229,9 +229,14 @@ than have a name stolen from another. Workspaces that already exist when the
 watcher starts keep the machine theme, and workspaces you name by hand are
 never touched.
 
-A scheme belongs to its workspace until the workspace is destroyed: the
-watcher removes the workspace's entry from the include when the workspace
-closes, a workspace that survives a reboot keeps its scheme, and entries for
+A scheme belongs to its workspace until that workspace's life ends: close
+every app on it and switch away, and the watcher takes the scheme back — it
+un-names the now-empty workspace, niri destroys it, and the include entry is
+pruned in the same pass, so no ghost of a used-up scheme lingers. (An unnamed
+empty workspace is some monitor's spare and stays exactly that: the watcher
+never names the spare, so the machine keeps one plain workspace per monitor
+and no more.) The watcher also removes a closed workspace's entry from the
+include, a workspace that survives a reboot keeps its scheme, and entries for
 workspaces that no longer exist are pruned at the next watcher start. The
 scheme is a per-workspace `layout` part — background, focus ring, border,
 shadow, tab indicator — declared under the workspace's scheme name. niri's
@@ -262,26 +267,45 @@ is safe to keep it in autostart. In a session that is already running, start it
 with `niri-spaces workspace-strip` — quit the old strip first if you change its
 settings mid-session.
 
-The strip is a small overlay in the top-left corner: one numbered chip per live
-workspace, labelled with the number niri displays. A chip wears the background
-and accent of the colour scheme its workspace bears — the same schemes
-`niri-workspace-colors` assigns and the same state file it keeps — so colours
-carry over whether or not you use the color watcher's include file. The strip
-reserves no space of its own (layer exclusive zone 0). `workspace_strip_height`
-sizes it in logical pixels (16–128, default 30); `workspace_strip_margin_top`
-(0–512, default 0) drops it below a bar that occupies the corner.
+The strip is a small bar: one numbered chip per live workspace, labelled with
+the number niri displays. There is one strip **per monitor** — niri's numbering
+restarts at 1 on every screen, so a single shared row would show duplicate
+numbers — and each monitor's row appears only on its own screen. Plugging a
+display in or out adds or removes its strip as niri's workspace report changes;
+when a screen goes away its workspaces collapse onto the remaining monitor and
+its chips follow there. Nothing in the mapping is model-specific: strips are
+assigned to displays by connector name, then by EDID identity (two identical
+models each get their own strip), so any number and kind of screens works.
+
+A chip wears the background and accent of the colour scheme its workspace
+bears — the same schemes `niri-workspace-colors` assigns and the same state
+file it keeps — so colours carry over whether or not you use the color
+watcher's include file. The strip **reserves its own space** (a layer
+exclusive zone), so it never covers a panel or bar the way an overlay would.
+`workspace_strip_height` sizes it in logical pixels (16–128, default 30).
+`workspace_strip_position` anchors the row to the `"top"` (default) or
+`"bottom"` screen edge; `workspace_strip_align` places it on that edge as
+`"left"`, `"center"` (default) or `"right"`, and a centered row re-centers
+itself automatically as chips come and go. `workspace_strip_margin` (0–512,
+default 0) is the gap between the screen edge (or an already-docked bar) and
+the strip; the older name `workspace_strip_margin_top` is still accepted.
 
 A plain click focuses that workspace — by name when it has one, by index when
-it doesn't. Dragging chip *i* onto position *j* performs exactly one action,
-`niri msg action move-workspace-to-index <j> --reference <i>`: niri shifts the
-other workspaces, and because a managed workspace's name *is* its colour
-scheme, the colour travels with the drag by construction.
+it doesn't — after focusing the chip's own monitor, since niri resolves an
+index against the focused screen. Dragging a chip opens a visible gap at the
+insertion point; releasing drops the workspace there, and the drag performs
+exactly one move: `niri msg action move-workspace-to-index <to> --reference
+<from>`, aimed at the strip's monitor. niri shifts the other workspaces, and
+because a managed workspace's name *is* its colour scheme, the colour travels
+with the drag by construction.
 
 The one-shot forms talk to the live compositor without running a daemon:
-`niri-spaces workspace-strip status` prints the chips in displayed order;
-`niri-spaces workspace-strip reorder FROM TO` performs the same move a drag
-would, using the 1-based indexes niri displays. `--check` validates the
-settings and the GTK bindings without writes or IPC.
+`niri-spaces workspace-strip status` prints the chips grouped per monitor in
+displayed order; `niri-spaces workspace-strip reorder FROM TO [OUTPUT]`
+performs the same move a drag would, using the 1-based indexes niri displays —
+when two monitors both number a workspace `FROM`, the focused monitor's is
+meant unless you name the output. `--check` validates the settings and the
+GTK bindings without writes or IPC.
 
 Unlike the other helpers this one needs more than the Python standard library:
 `python3-gi` with GTK 3 and the `gtk-layer-shell` introspection bindings, plus a

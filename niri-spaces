@@ -7,7 +7,7 @@
 #   niri-spaces list                    list available spaces and templates
 #   niri-spaces terminal-pairs [--check] run the optional 50/50 terminal watcher
 #   niri-spaces workspace-colors [--check] run the optional per-workspace color scheme watcher
-#   niri-spaces workspace-strip [--check | status | reorder FROM TO] the optional coloured workspace strip
+#   niri-spaces workspace-strip [--check | status | reorder FROM TO [OUTPUT]] the optional coloured workspace strip
 #   niri-spaces session [--check | status | restore [--dry-run]] the optional session snapshot & restore
 #
 # Space files live in ~/.config/niri-spaces/spaces/ and templates/.
