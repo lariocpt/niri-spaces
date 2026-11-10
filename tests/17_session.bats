@@ -200,6 +200,34 @@ EOF
     [ "$output" = "teal" ]
 }
 
+@test "daemon: niri 26.04 outputs map is parsed, width stays logical" {
+    printf '{"session_snapshot": true}\n' >"$NIRI_SPACES_DIR/settings.json"
+    export NIRI_SOCKET=/fake XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR/run"
+    mkdir -p "$XDG_RUNTIME_DIR"
+    write_workspaces <<'EOF'
+[{"id":1,"idx":1,"name":"teal","output":"eDP-1","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":7}]
+EOF
+    # The 26.04 shape: a map keyed by name; current_mode is an index, the
+    # geometry lives in `logical`. 1706 = 2560 physical / 1.5 scale.
+    cat >"$BATS_TEST_TMPDIR/outputs.json" <<'EOF'
+{"eDP-1":{"name":"eDP-1","make":"Japan Display Inc.","model":"GPD1001H","serial":"0x1","physical_size":[890,500],"modes":[{"width":2560,"height":1600,"refresh_rate":60009,"is_preferred":true}],"current_mode":0,"is_custom_mode":false,"vrr_supported":false,"vrr_enabled":false,"logical":{"x":0,"y":0,"width":1706,"height":1066,"scale":1.5,"transform":"Normal"}}}
+EOF
+    export NIRI_FAKE_OUTPUTS="$BATS_TEST_TMPDIR/outputs.json"
+    cat >"$NIRI_FAKE_STATE" <<'EOF'
+[{"id":7,"app_id":"com.microsoft.VSCode","title":"proj","workspace_id":1,"output":null,"is_floating":false,"layout":{"pos_in_scrolling_layout":[0,0],"tile_size":[853.0,896.0]}}]
+EOF
+    run "$NS_SESSION"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"snapshot saved on exit"* ]]
+    local snap="$HOME/.local/state/niri-spaces/session.json"
+    [ -f "$snap" ]
+    # 853 logical px of a 1706 px logical monitor: exactly half a screen.
+    run jq -r '.workspaces[0].windows[0].width' "$snap"
+    [ "$output" = "0.5" ]
+    run jq -r '.workspaces[0].windows[0].rule' "$snap"
+    [ "$output" = "vscode" ]
+}
+
 # ---------------------------------------------------------------- start wiring
 
 @test "start: the session daemon is spawned next to the other helpers" {

@@ -289,12 +289,34 @@ def rule_for(window, proc, paths=None):
     return "skip", None, None, f"no restore rule for {app_id}"
 
 
+def _output_widths(outputs):
+    """Output name -> logical width, the unit `tile_size` is reported in.
+
+    Niri 26.04 reports outputs as a map keyed by name, with the geometry in
+    `logical` (`current_mode` is an index into `modes`, not a size); earlier
+    niri used a flat list whose entries carried a top-level `width`. Both
+    shapes are accepted so captures keep working across the upgrade."""
+    widths = {}
+    if isinstance(outputs, dict):
+        for name, o in outputs.items():
+            if not isinstance(o, dict):
+                continue
+            logical = o.get("logical") or {}
+            if logical.get("width"):
+                widths[name] = logical["width"]
+    else:
+        for o in outputs or []:
+            if isinstance(o, dict):
+                widths[o.get("name")] = o.get("width")
+    return widths
+
+
 def build_snapshot(workspaces, windows, outputs, proc, paths=None):
     """The snapshot document: workspaces in display order, windows with rules."""
     proc = proc or Proc()
     paths = paths or {}
     ws_by_id = {w["id"]: dict(w, windows=[]) for w in sorted(workspaces, key=lambda w: w["idx"])}
-    output_widths = {o.get("name"): o.get("width") for o in (outputs or [])}
+    output_widths = _output_widths(outputs)
     for win in windows:
         target = ws_by_id.get(win.get("workspace_id"))
         if target is None:

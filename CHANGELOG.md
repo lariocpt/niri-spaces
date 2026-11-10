@@ -51,6 +51,11 @@ section here. The tag being released must match the heading it releases.
   chip. The one spare per monitor stays unnamed and belongs to no scheme.
 - Workspaces on a second monitor are no longer renamed or reordered against
   the wrong screen (same root cause as the index addressing above).
+- Session snapshot on niri 26.04. The compositor's `outputs` query now
+  reports a map keyed by name (the mode size nested, `current_mode` an
+  index into `modes`), and the capture crashed on its first snapshot — the
+  daemon died before ever saving one. The parser accepts both shapes and
+  reads the logical width, which is the unit `tile_size` is reported in.
 
 ## [0.5.0] - 2026-11-09
 
