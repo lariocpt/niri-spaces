@@ -90,7 +90,11 @@ def builtin_schemes():
         return []
     try:
         module = runpy.run_path(str(sibling))
-        return [dict(s) for s in module["SCHEMES"]]
+        # The color daemon assigns from the full pool (SCHEMES + EXTRA_SCHEMES);
+        # reading only the classic list left every extra scheme (indigo,
+        # cappuccino, ...) uncolored in the chips.
+        pool = list(module["SCHEMES"]) + list(module.get("EXTRA_SCHEMES", []))
+        return [dict(s) for s in pool]
     except (OSError, AttributeError, ValueError, ImportError):
         return []
 
@@ -477,7 +481,15 @@ class StripManager:
         # The library wants init before the window is realized (waybar's own
         # source is explicit about this ordering), so it goes before any show.
         GtkLayerShell.init_for_window(window)
-        GtkLayerShell.set_layer(window, GtkLayerShell.Layer.TOP)
+        # OVERLAY with margin 0: niri docks surfaces on the same edge in
+        # layer order, so a higher layer lands inward of the lower layers'
+        # exclusive zones — after waybar (TOP, exclusive) it docks at the
+        # bar's bottom edge, and with no bar at all it falls back to the
+        # screen edge. Both panels on TOP was a launch-order lottery (the
+        # 0.6.0 overlap bug); the strip above the bar's zone is what
+        # reserves space for windows. Keep the strip's margin at 0 so the
+        # bar's own zone is not reserved twice.
+        GtkLayerShell.set_layer(window, GtkLayerShell.Layer.OVERLAY)
         GtkLayerShell.set_keyboard_mode(window, GtkLayerShell.KeyboardMode.NONE)
         GtkLayerShell.set_namespace(window, "niri-workspace-strip")
         # One window per display: without this every strip would pile onto
@@ -782,6 +794,7 @@ class MonitorStrip:
 
     def on_press(self, _widget, event):
         pos = self.slot_at(event.x)
+        log(f"press on {self.output}: x={event.x:.0f} slot={pos}")
         if pos is None or self.drag is not None:
             return False
         self.drag = {"ws": self.group[pos], "x0": event.x, "y0": event.y,
@@ -845,16 +858,24 @@ class MonitorStrip:
             # so the monitor has to hold the focus first — an index action
             # resolves against the focused monitor. A nameless workspace is
             # addressed by index: focus-by-name is a no-op without a bearer.
-            self.focus_monitor()
-            msg("action", "focus-workspace",
-                source["name"] if source.get("name") else str(source["idx"]))
+            target = source["name"] if source.get("name") else str(source["idx"])
+            log(f"click on {self.output}: focus-workspace {target!r}")
+            try:
+                self.focus_monitor()
+                msg("action", "focus-workspace", target)
+            except Exception as error:  # noqa: BLE001 — the strip must survive
+                log(f"focus failed: {error}")
             self.manager.refresh(force=True)
             return False
         target_idx = drag["gap"] + 1  # 1-based, matching niri's display
+        log(f"drag on {self.output}: {source['idx']} -> {target_idx}")
         if target_idx != source["idx"]:
-            self.focus_monitor()
-            msg("action", "move-workspace-to-index", str(target_idx),
-                "--reference", str(source["idx"]))
+            try:
+                self.focus_monitor()
+                msg("action", "move-workspace-to-index", str(target_idx),
+                    "--reference", str(source["idx"]))
+            except Exception as error:  # noqa: BLE001 — the strip must survive
+                log(f"move failed: {error}")
         self.manager.refresh(force=True)
         self.rebuild()
         return False

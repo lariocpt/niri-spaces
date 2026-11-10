@@ -124,7 +124,10 @@ class SchemeTests(ConfigTestCase):
         else:
             colors = runpy.run_path(str(Path(__file__).resolve().parents[1]
                                         / 'niri-workspace-colors'))
-            names = {s['name'] for s in colors['SCHEMES']}
+            # The daemon assigns from the full pool (classic + extra schemes),
+            # so the chips must know the full pool too.
+            names = ({s['name'] for s in colors['SCHEMES']}
+                     | {s['name'] for s in colors['EXTRA_SCHEMES']})
             self.assertEqual(set(schemes), names)
 
     def test_scheme_requires_a_name(self):
